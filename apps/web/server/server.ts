@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -7,6 +6,7 @@ import type { Hono } from "hono";
 import { WebSocket, WebSocketServer } from "ws";
 
 import { createApp } from "./app.js";
+import { bearerToken, equalTokens } from "./auth.js";
 import { LiveCoordinator, parseIngestEvent } from "./live.js";
 import { InMemoryStore, type Store } from "./store.js";
 
@@ -16,6 +16,7 @@ export interface ServerOptions {
   coalesceMs?: number;
   production?: boolean;
   clientRoot?: string;
+  recomputeRatings?: () => Promise<unknown>;
 }
 
 export interface QuipArenaServer {
@@ -27,27 +28,30 @@ export interface QuipArenaServer {
   close(): Promise<void>;
 }
 
-function equalTokens(received: string | null, expected: string): boolean {
-  if (received === null) return false;
-  const left = Buffer.from(received);
-  const right = Buffer.from(expected);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
 function requestToken(request: import("node:http").IncomingMessage): string | null {
-  const authorization = request.headers.authorization;
-  if (authorization?.startsWith("Bearer ")) return authorization.slice("Bearer ".length);
+  const authorization = bearerToken(request.headers.authorization);
+  if (authorization) return authorization;
   const url = new URL(request.url ?? "/", "http://localhost");
   return url.searchParams.get("token");
+}
+
+function storeRatingsRecomputer(store: Store): (() => Promise<unknown>) | undefined {
+  const candidate = store as Store & { recomputeRatings?: () => Promise<unknown> };
+  return typeof candidate.recomputeRatings === "function"
+    ? () => candidate.recomputeRatings!()
+    : undefined;
 }
 
 export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
   if (!options.ingestToken) throw new Error("INGEST_TOKEN must not be empty");
   const store = options.store ?? new InMemoryStore();
   const live = new LiveCoordinator(store, options.coalesceMs);
+  const recomputeRatings = options.recomputeRatings ?? storeRatingsRecomputer(store);
   const appOptions = {
     store,
     live,
+    ingestToken: options.ingestToken,
+    ...(recomputeRatings === undefined ? {} : { recomputeRatings }),
     ...(options.production === undefined ? {} : { production: options.production }),
     ...(options.clientRoot === undefined ? {} : { clientRoot: options.clientRoot }),
   };

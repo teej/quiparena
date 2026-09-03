@@ -8,10 +8,13 @@ import { streamSSE } from "hono/streaming";
 import type { LeaderboardPopulation } from "../shared/types.js";
 import type { LiveCoordinator } from "./live.js";
 import type { Store } from "./store.js";
+import { bearerToken, equalTokens } from "./auth.js";
 
 export interface AppOptions {
   store: Store;
   live: LiveCoordinator;
+  ingestToken: string;
+  recomputeRatings?: () => Promise<unknown>;
   production?: boolean;
   clientRoot?: string;
 }
@@ -71,6 +74,18 @@ export function createApp(options: AppOptions): Hono {
       ? requested
       : "player";
     return context.json(await options.store.leaderboard(population));
+  });
+
+  app.post("/api/admin/ratings/recompute", async (context) => {
+    const token = bearerToken(context.req.header("Authorization")) ?? context.req.query("token") ?? null;
+    if (!equalTokens(token, options.ingestToken)) {
+      return context.json({ error: "Unauthorized" }, 401);
+    }
+    if (!options.recomputeRatings) {
+      return context.json({ error: "Ratings recompute is unavailable for the active store" }, 503);
+    }
+    await options.recomputeRatings();
+    return context.json({ ok: true });
   });
 
   const production = options.production ?? process.env["NODE_ENV"] === "production";
