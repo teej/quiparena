@@ -42,29 +42,28 @@ function stripSurroundingQuotes(value: string): string {
   return result;
 }
 
-function clean(value: string, limit: number): string {
+function clean(value: string): string {
   const withoutNonBmp = value.replace(/[\u{10000}-\u{10ffff}]/gu, "");
-  const plain = stripSurroundingQuotes(stripMarkdown(withoutNonBmp))
+  return stripSurroundingQuotes(stripMarkdown(withoutNonBmp))
+    .normalize("NFC")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\.+$/u, "")
     .trim();
-
-  return plain.slice(0, limit).trim().replace(/\.+$/u, "").trim();
 }
 
-/** Normalize a model response into text that Quiplash can safely submit. */
+/** Normalize a model response without shortening its meaning. */
 export function sanitizeAnswer(value: string, options: SanitizeOptions = {}): string {
   const limit = options.limit ?? DEFAULT_ANSWER_LIMIT;
   if (!Number.isInteger(limit) || limit < 1) {
     throw new RangeError("Answer limit must be a positive integer");
   }
 
-  const answer = clean(value, limit);
+  const answer = clean(value);
   if (/[\p{L}\p{N}]/u.test(answer)) return answer;
 
-  const fallback = clean(options.fallback ?? DEFAULT_FALLBACK, limit);
-  return fallback || DEFAULT_FALLBACK.slice(0, limit);
+  const fallback = clean(options.fallback ?? DEFAULT_FALLBACK);
+  return fallback || DEFAULT_FALLBACK;
 }
 
 function parseJsonArray(value: string): string[] | undefined {

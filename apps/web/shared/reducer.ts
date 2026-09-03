@@ -269,6 +269,9 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
       };
     case "harness.error":
       return { ...state, phase: "error", error: event.message };
+    case "answer.rejected":
+      // The harness re-asks the player; the eventual answer.submitted updates the card.
+      return state;
   }
 }
 

@@ -101,6 +101,8 @@ function streamingContext(deadline: number, round: 1 | 2 | 3): PlayerContext {
     gameId: `cli-${Date.now()}`,
     round,
     deadlineMs: deadline,
+    maxLength: 45,
+    ...(round === 3 ? { fieldCount: 3 } : {}),
     onThinking: (delta) => {
       if (!thinkingStarted) {
         process.stderr.write("thinking> ");

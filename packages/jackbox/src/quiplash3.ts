@@ -47,6 +47,9 @@ interface ActiveOccurrence {
   handled: boolean;
 }
 
+const DUPLICATE_ANSWER_FEEDBACK =
+  "The game rejected that answer because another player submitted the same thing. Give a different one.";
+
 export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   readonly connection: EcastConnection;
   readonly player: Player;
@@ -376,6 +379,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     ));
     const timeoutMs = this.#options.defaultAnswerTimeoutMs;
     const deadlineMs = deadlineAt(this.#now(), timeoutMs, this.#options.timerSafetyMs);
+    const maxLength = positiveInteger(state.maxLength) ?? 45;
     const playerId = this.#requirePlayerId();
     this.#emitEvent({
       type: "prompt.dealt",
@@ -389,18 +393,20 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     });
 
     const result = await this.#beforeDeadline(
-      () => this.player.answer(prompt, this.#context(round, prompt, deadlineMs)),
+      () => this.player.answer(prompt, this.#context(round, prompt, deadlineMs, maxLength)),
       deadlineMs,
       "",
     );
-    const maxLength = positiveInteger(state.maxLength) ?? 45;
     const answer = cleanLine(result.value, maxLength);
     try {
       const submittedAnswer = await this.#submitSingleAnswer(
         state,
         answer,
         raw,
+        round,
+        prompt,
         deadlineMs,
+        maxLength,
         result.timedOut && offersSafetyQuip(state.actions),
       );
       this.#emitEvent({
@@ -425,7 +431,10 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     state: Record<string, unknown>,
     initialAnswer: string,
     raw: StateView,
+    round: RoundNumber,
+    prompt: string,
     deadlineMs: number,
+    maxLength: number,
     useSafetyQuip: boolean,
   ): Promise<string> {
     const textKey = typeof state.textKey === "string" && state.textKey ? state.textKey : undefined;
@@ -435,9 +444,10 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       return "⁇";
     }
 
-    const maxLength = positiveInteger(state.maxLength) ?? 45;
     let answer = initialAnswer;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    let reasks = 0;
+    let triedVariant = false;
+    while (true) {
       try {
         if (textKey) await this.connection.request("text/update", { key: textKey, val: answer });
         else {
@@ -446,11 +456,34 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         }
         return answer;
       } catch (error) {
-        if (!isDuplicateAnswerError(error) || attempt === 2 || this.#now() >= deadlineMs) throw error;
-        answer = variantAnswer(answer, attempt + 1, maxLength);
+        if (!isDuplicateAnswerError(error)) throw error;
+        this.#emitAnswerRejected(round, prompt, answer, DUPLICATE_ANSWER_FEEDBACK);
+
+        if (reasks < 2 && this.#now() < deadlineMs) {
+          reasks += 1;
+          const revised = await this.#beforeDeadline(
+            () => this.player.answer(prompt, this.#context(
+              round,
+              prompt,
+              deadlineMs,
+              maxLength,
+              undefined,
+              DUPLICATE_ANSWER_FEEDBACK,
+            )),
+            deadlineMs,
+            "",
+          );
+          if (!revised.fallback) {
+            answer = cleanLine(revised.value, maxLength);
+            continue;
+          }
+        }
+
+        if (triedVariant) throw error;
+        triedVariant = true;
+        answer = variantAnswer(answer, reasks + 1, maxLength);
       }
     }
-    return answer;
   }
 
   async #handleThriplash(raw: StateView): Promise<void> {
@@ -474,6 +507,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     const round = this.#observeRound(3);
     const timeoutMs = this.#options.defaultThriplashTimeoutMs;
     const deadlineMs = deadlineAt(this.#now(), timeoutMs, this.#options.timerSafetyMs);
+    const maxLength = positiveInteger(state.maxLength) ?? 45;
+    const fieldCount = positiveInteger(state.fieldCount) ?? 3;
     const playerId = this.#requirePlayerId();
     this.#emitEvent({
       type: "prompt.dealt",
@@ -487,11 +522,13 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     });
 
     const result = await this.#beforeDeadline(
-      () => this.player.answerFinal(prompt, this.#context(round, prompt, deadlineMs)),
+      () => this.player.answerFinal(
+        prompt,
+        this.#context(round, prompt, deadlineMs, maxLength, fieldCount),
+      ),
       deadlineMs,
       ["", "", ""] as [string, string, string],
     );
-    const maxLength = positiveInteger(state.maxLength) ?? 45;
     let answers: [string, string, string] = [
       cleanLine(result.value[0], maxLength),
       cleanLine(result.value[1], maxLength),
@@ -499,7 +536,15 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     ];
 
     try {
-      answers = await this.#submitThriplash(state, answers, raw, deadlineMs);
+      answers = await this.#submitThriplash(
+        state,
+        answers,
+        raw,
+        prompt,
+        deadlineMs,
+        maxLength,
+        fieldCount,
+      );
       this.#emitEvent({
         type: "answer.submitted",
         gameId: this.gameId,
@@ -522,11 +567,15 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     state: Record<string, unknown>,
     initialAnswers: [string, string, string],
     raw: StateView,
+    prompt: string,
     deadlineMs: number,
+    maxLength: number,
+    fieldCount: number,
   ): Promise<[string, string, string]> {
-    const fieldCount = positiveInteger(state.fieldCount) ?? 3;
     let answers = initialAnswers;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    let reasks = 0;
+    let triedVariant = false;
+    while (true) {
       const fields = [...answers].slice(0, fieldCount);
       while (fields.length < fieldCount) fields.push("");
       try {
@@ -538,11 +587,38 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         }
         return answers;
       } catch (error) {
-        if (!isDuplicateAnswerError(error) || attempt === 2 || this.#now() >= deadlineMs) throw error;
-        answers = variantAnswers(answers, attempt + 1, positiveInteger(state.maxLength) ?? 45);
+        if (!isDuplicateAnswerError(error)) throw error;
+        this.#emitAnswerRejected(3, prompt, answers, DUPLICATE_ANSWER_FEEDBACK);
+
+        if (reasks < 2 && this.#now() < deadlineMs) {
+          reasks += 1;
+          const revised = await this.#beforeDeadline(
+            () => this.player.answerFinal(prompt, this.#context(
+              3,
+              prompt,
+              deadlineMs,
+              maxLength,
+              fieldCount,
+              DUPLICATE_ANSWER_FEEDBACK,
+            )),
+            deadlineMs,
+            ["", "", ""] as [string, string, string],
+          );
+          if (!revised.fallback) {
+            answers = revised.value.map((answer) => cleanLine(answer, maxLength)) as [
+              string,
+              string,
+              string,
+            ];
+            continue;
+          }
+        }
+
+        if (triedVariant) throw error;
+        triedVariant = true;
+        answers = variantAnswers(answers, reasks + 1, maxLength);
       }
     }
-    return answers;
   }
 
   async #handleVote(raw: StateView): Promise<void> {
@@ -584,7 +660,11 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     });
 
     const result = await this.#beforeDeadline(
-      () => this.player.vote(prompt, options, this.#context(round, prompt, deadlineMs)),
+      () => this.player.vote(
+        prompt,
+        options,
+        this.#context(round, prompt, deadlineMs, positiveInteger(state.maxLength) ?? 45),
+      ),
       deadlineMs,
       0,
     );
@@ -636,11 +716,21 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     return round;
   }
 
-  #context(round: RoundNumber, prompt: string, deadlineMs: number): PlayerContext {
+  #context(
+    round: RoundNumber,
+    _prompt: string,
+    deadlineMs: number,
+    maxLength: number,
+    fieldCount?: number,
+    feedback?: string,
+  ): PlayerContext {
     return {
       gameId: this.gameId,
       round,
       deadlineMs,
+      maxLength,
+      ...(fieldCount === undefined ? {} : { fieldCount }),
+      ...(feedback === undefined ? {} : { feedback }),
       onThinking: (text) => this.#emitEvent({
         type: "thinking.delta",
         gameId: this.gameId,
@@ -656,6 +746,24 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       }),
     };
+  }
+
+  #emitAnswerRejected(
+    round: RoundNumber,
+    prompt: string,
+    answer: string | [string, string, string],
+    reason: string,
+  ): void {
+    this.#emitEvent({
+      type: "answer.rejected",
+      gameId: this.gameId,
+      round,
+      playerId: this.#requirePlayerId(),
+      prompt,
+      answer,
+      reason,
+      at: this.#at(),
+    });
   }
 
   async #beforeDeadline<T>(work: () => Promise<T>, deadlineMs: number, fallback: T): Promise<DeadlineResult<T>> {

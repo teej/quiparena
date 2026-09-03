@@ -15,33 +15,44 @@ const usage = {
 };
 
 function mockModel(text: string, reasoning = ""): MockLanguageModelV4 {
-  const chunks: MockStreamPart[] = [
-    ...(reasoning
-      ? [
-          { type: "reasoning-start" as const, id: "reasoning-1" },
-          { type: "reasoning-delta" as const, id: "reasoning-1", delta: reasoning },
-          { type: "reasoning-end" as const, id: "reasoning-1" },
-        ]
-      : []),
-    { type: "text-start", id: "text-1" },
-    { type: "text-delta", id: "text-1", delta: text },
-    { type: "text-end", id: "text-1" },
-    {
-      type: "finish",
-      finishReason: { unified: "stop", raw: undefined },
-      usage,
-      providerMetadata: { openrouter: { usage: { cost: 0.000_123 } } },
-    },
-  ];
+  return mockModelSequence([{ text, reasoning }]);
+}
+
+function mockModelSequence(
+  responses: Array<{ text: string; reasoning?: string }>,
+): MockLanguageModelV4 {
+  let index = 0;
   return new MockLanguageModelV4({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
-    }),
+    doStream: async () => {
+      const response = responses[Math.min(index, responses.length - 1)] ?? { text: "" };
+      index += 1;
+      const chunks: MockStreamPart[] = [
+        ...(response.reasoning
+          ? [
+              { type: "reasoning-start" as const, id: "reasoning-1" },
+              { type: "reasoning-delta" as const, id: "reasoning-1", delta: response.reasoning },
+              { type: "reasoning-end" as const, id: "reasoning-1" },
+            ]
+          : []),
+        { type: "text-start", id: "text-1" },
+        { type: "text-delta", id: "text-1", delta: response.text },
+        { type: "text-end", id: "text-1" },
+        {
+          type: "finish",
+          finishReason: { unified: "stop", raw: undefined },
+          usage,
+          providerMetadata: { openrouter: { usage: { cost: 0.000_123 } } },
+        },
+      ];
+      return {
+        stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+      };
+    },
   });
 }
 
 function context(deadlineMs = Date.now() + 5_000) {
-  return { gameId: "game-1", round: 1 as const, deadlineMs };
+  return { gameId: "game-1", round: 1 as const, deadlineMs, maxLength: 45 };
 }
 
 function quietLogger(): ModelPlayerLogger {
@@ -51,7 +62,8 @@ function quietLogger(): ModelPlayerLogger {
 describe("sanitizeAnswer", () => {
   it("strips quotes, markdown, periods, emoji, and excess whitespace", () => {
     expect(sanitizeAnswer('  **“A   tiny 😀 joke...”**  ')).toBe("A tiny joke");
-    expect(sanitizeAnswer("abcdefghijklmnopqrstuvwxyz", { limit: 8 })).toBe("abcdefgh");
+    expect(sanitizeAnswer("abcdefghijklmnopqrstuvwxyz", { limit: 8 }))
+      .toBe("abcdefghijklmnopqrstuvwxyz");
     expect(sanitizeAnswer("!!!")).toBe("no comment");
   });
 });
@@ -122,6 +134,128 @@ describe("parseVote", () => {
 });
 
 describe("ModelPlayer streaming", () => {
+  it("re-asks an over-length answer in the same conversation and uses the revision", async () => {
+    const events: StreamEvent[] = [];
+    const model = mockModelSequence([
+      { text: "A giant compact disc fortress" },
+      { text: "CD fortress" },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/revise",
+      displayName: "Revise",
+      languageModel: model,
+      safetyMarginMs: 0,
+      sink: (event) => events.push(event),
+      logger: quietLogger(),
+    });
+
+    await expect(player.answer("Build something", { ...context(), maxLength: 12 }))
+      .resolves.toBe("CD fortress");
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("at most 12 characters");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      "That is 29 characters; the limit is 12. Rewrite it so it fits, keep the joke.",
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "trace.completed",
+      answer: "CD fortress",
+      attempts: [{
+        text: "A giant compact disc fortress",
+        reason: "That is 29 characters; the limit is 12. Rewrite it so it fits, keep the joke.",
+      }],
+      usage: { inputTokens: 14, outputTokens: 8, reasoningTokens: 2, costUsd: 0.000_246 },
+    });
+  });
+
+  it("truncates only after two corrective attempts also exceed the limit", async () => {
+    const model = mockModelSequence([
+      { text: "first answer is much too long" },
+      { text: "second answer is still too long" },
+      { text: "third answer remains too long" },
+    ]);
+    const events: StreamEvent[] = [];
+    const player = new ModelPlayer({
+      model: "test/truncate",
+      displayName: "Truncate",
+      languageModel: model,
+      safetyMarginMs: 0,
+      sink: (event) => events.push(event),
+      logger: quietLogger(),
+    });
+
+    await expect(player.answer("Keep trying", { ...context(), maxLength: 10 }))
+      .resolves.toBe("third answ");
+    expect(model.doStreamCalls).toHaveLength(3);
+    expect(events.at(-1)).toMatchObject({ attempts: [{}, {}] });
+  });
+
+  it("skips a corrective turn when the safety deadline is too close", async () => {
+    const model = mockModel("this answer is too long");
+    const player = new ModelPlayer({
+      model: "test/no-time",
+      displayName: "NoTime",
+      languageModel: model,
+      safetyMarginMs: 1_000,
+      logger: quietLogger(),
+    });
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(9_500);
+
+    try {
+      await expect(player.answer("Hurry", { ...context(10_000), maxLength: 8 }))
+        .resolves.toBe("this ans");
+      expect(model.doStreamCalls).toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("prepends harness feedback to the model request", async () => {
+    const model = mockModel("Different joke");
+    const player = new ModelPlayer({
+      model: "test/feedback",
+      displayName: "Feedback",
+      languageModel: model,
+      safetyMarginMs: 0,
+      logger: quietLogger(),
+    });
+
+    await player.answer("Try again", {
+      ...context(),
+      feedback: "The game rejected that answer. Give a different one.",
+    });
+    const request = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(request.indexOf("The game rejected that answer. Give a different one."))
+      .toBeLessThan(request.indexOf("Prompt: Try again"));
+  });
+
+  it("re-asks only the over-length Thriplash lines", async () => {
+    const longLine = "This middle line is much too long";
+    const model = mockModelSequence([
+      { text: `First\n${longLine}\nThird` },
+      { text: "Fixed two" },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/final-revise",
+      displayName: "FinalFix",
+      languageModel: model,
+      safetyMarginMs: 0,
+      logger: quietLogger(),
+    });
+
+    await expect(player.answerFinal("Three jokes", {
+      ...context(),
+      round: 3,
+      maxLength: 12,
+      fieldCount: 3,
+    })).resolves.toEqual(["First", "Fixed two", "Third"]);
+    expect(model.doStreamCalls).toHaveLength(2);
+    const correction = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    expect(correction).toContain("Rewrite only line 2");
+    expect(correction).not.toContain("Rewrite only lines 1");
+  });
+
   it("aborts at the safety deadline and returns the partial draft", async () => {
     const model = new MockLanguageModelV4({
       doStream: async (options) => ({

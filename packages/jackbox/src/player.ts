@@ -10,6 +10,12 @@ export interface PlayerContext {
   round: 1 | 2 | 3;
   /** Wall-clock deadline in ms since epoch. Return before this or the harness submits blank. */
   deadlineMs: number;
+  /** Maximum answer length reported by the active controller state. */
+  maxLength: number;
+  /** Number of answer fields requested by the final-round controller state. */
+  fieldCount?: number;
+  /** Explanation supplied when the game rejected an earlier response. */
+  feedback?: string;
   /** Optional hooks for live streaming of the model's process. */
   onThinking?: (delta: string) => void;
   onDraft?: (text: string) => void;
@@ -20,7 +26,7 @@ export interface Player {
   readonly name: string;
   /** Model slug or null for scripted/human players. */
   readonly modelId: string | null;
-  /** Rounds 1-2. Return the answer text (the harness truncates to the game's limit). */
+  /** Rounds 1-2. Return one answer within the context's game-provided limit. */
   answer(prompt: string, ctx: PlayerContext): Promise<string>;
   /** Round 3 (Thriplash). Three short lines. */
   answerFinal(prompt: string, ctx: PlayerContext): Promise<[string, string, string]>;

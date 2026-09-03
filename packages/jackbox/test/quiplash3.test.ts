@@ -52,8 +52,12 @@ describe("Quiplash3Seat", () => {
     const player: Player = {
       name: "REC1",
       modelId: null,
-      answer: vi.fn(async () => "ordinary quip"),
-      answerFinal: vi.fn(async (): Promise<[string, string, string]> => ["same", "same", "same"]),
+      answer: vi.fn()
+        .mockResolvedValueOnce("ordinary quip")
+        .mockResolvedValueOnce("different quip"),
+      answerFinal: vi.fn()
+        .mockResolvedValueOnce(["same", "same", "same"])
+        .mockResolvedValueOnce(["fresh one", "fresh two", "fresh three"]),
       vote: vi.fn(async () => 1),
     };
     const events: AnyEvent[] = [];
@@ -86,11 +90,19 @@ describe("Quiplash3Seat", () => {
       params: { key: "entertext:4", val: "ordinary quip" },
     });
     expect(requests.filter((request) => request.opcode === "text/update")[1]).toMatchObject({
-      params: { key: "entertext:4", val: "ordinary quip !" },
+      params: { key: "entertext:4", val: "different quip" },
     });
-    expect(player.answer).toHaveBeenCalledWith(
+    expect(player.answer).toHaveBeenNthCalledWith(
+      1,
       "The worst mascot",
-      expect.objectContaining({ round: 1, gameId: "game-1" }),
+      expect.objectContaining({ round: 1, gameId: "game-1", maxLength: 45 }),
+    );
+    expect(player.answer).toHaveBeenNthCalledWith(
+      2,
+      "The worst mascot",
+      expect.objectContaining({
+        feedback: "The game rejected that answer because another player submitted the same thing. Give a different one.",
+      }),
     );
 
     sendEntity(client, pc++, 10, states.singleChoice);
@@ -117,7 +129,12 @@ describe("Quiplash3Seat", () => {
     await waitFor(() => requests.filter((request) => request.opcode === "text/update").length === 4);
     const textUpdates = requests.filter((request) => request.opcode === "text/update");
     expect(textUpdates[2]?.params).toMatchObject({ val: "same\nsame\nsame" });
-    expect(textUpdates[3]?.params).toMatchObject({ val: "same !\nsame !!\nsame !!!" });
+    expect(textUpdates[3]?.params).toMatchObject({ val: "fresh one\nfresh two\nfresh three" });
+    expect(player.answerFinal).toHaveBeenNthCalledWith(
+      2,
+      "Three signs the moon is haunted",
+      expect.objectContaining({ maxLength: 45, fieldCount: 3, feedback: expect.any(String) }),
+    );
 
     sendEntity(client, pc++, 12, {
       state: "Lobby",
@@ -136,11 +153,20 @@ describe("Quiplash3Seat", () => {
       "game.started",
       "round.started",
       "prompt.dealt",
+      "answer.rejected",
       "answer.submitted",
       "vote.requested",
       "vote.cast",
       "game.ended",
     ]));
+    expect(events.filter((event) => event.type === "answer.rejected")).toEqual([
+      expect.objectContaining({
+        round: 1,
+        answer: "ordinary quip",
+        reason: "The game rejected that answer because another player submitted the same thing. Give a different one.",
+      }),
+      expect.objectContaining({ round: 3, answer: ["same", "same", "same"] }),
+    ]);
     expect(events.find((event) => event.type === "vote.cast")).toMatchObject({ choice: 1, round: 2 });
   });
 
@@ -353,6 +379,10 @@ describe("Quiplash3Seat", () => {
     await waitFor(() => requests.some((request) => request.opcode === "text/update"));
     const normalUpdate = requests.find((request) => request.opcode === "text/update");
     expect(normalUpdate?.params.val).toBe("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS");
+    expect(player.answer).toHaveBeenCalledWith(
+      "Plain text prompt",
+      expect.objectContaining({ maxLength: 45 }),
+    );
     expect(events.find((event) => event.type === "prompt.dealt" && event.round === 1)).toMatchObject({
       deadlineMs: 777,
       controller: { prompt: { text: "Plain text prompt" }, doneText: { html: "<b>not completion</b>" } },
@@ -384,6 +414,10 @@ describe("Quiplash3Seat", () => {
     });
     await waitFor(() => requests.filter((request) => request.opcode === "text/update").length === 2);
     expect(requests.filter((request) => request.opcode === "text/update")[1]?.params.val).toBe("one\ntwo");
+    expect(player.answerFinal).toHaveBeenCalledWith(
+      "Only two this time",
+      expect.objectContaining({ maxLength: 3, fieldCount: 2 }),
+    );
     expect(events.find((event) => event.type === "prompt.dealt" && event.round === 3)).toMatchObject({
       deadlineMs: 888,
     });

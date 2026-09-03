@@ -285,6 +285,8 @@ class FakeGame {
       gameId: this.gameId,
       round,
       deadlineMs,
+      maxLength: 45,
+      ...(round === 3 ? { fieldCount: 3 } : {}),
       onThinking: (text) => seat.emit({
         type: "thinking.delta",
         gameId: this.gameId,

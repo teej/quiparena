@@ -207,6 +207,7 @@ export class Recorder {
         break;
 
       case "round.started":
+      case "answer.rejected":
       case "vote.cast":
       case "harness.error":
         break;

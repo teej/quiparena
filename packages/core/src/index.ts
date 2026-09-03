@@ -94,6 +94,7 @@ export type GameEvent =
   | { type: "game.started"; gameId: string; at: string }
   | { type: "round.started"; gameId: string; round: RoundNumber; at: string }
   | { type: "prompt.dealt"; gameId: string; round: RoundNumber; playerId: string; prompt: string; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
+  | { type: "answer.rejected"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; reason: string; at: string }
   | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; controller?: HarnessControllerRaw; at: string }
   | { type: "vote.requested"; gameId: string; round: RoundNumber; playerId: string; prompt: string; options: string[]; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
   | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; choiceKey?: string | number; answer?: string; controller?: HarnessControllerRaw; at: string }
@@ -106,6 +107,6 @@ export type GameEvent =
 export type StreamEvent =
   | { type: "thinking.delta"; gameId: string; playerId: string; text: string; at: string }
   | { type: "answer.draft"; gameId: string; playerId: string; text: string; at: string }
-  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number }; at: string };
+  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; attempts?: Array<{ text: string; reason: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number }; at: string };
 
 export type AnyEvent = GameEvent | StreamEvent;

@@ -5,6 +5,7 @@ import {
   streamText,
   type LanguageModel,
   type LanguageModelUsage,
+  type ModelMessage,
   type ProviderMetadata,
 } from "ai";
 
@@ -73,6 +74,10 @@ interface GenerationResult {
   providerMetadata?: ProviderMetadata;
 }
 
+type TraceAttempt = NonNullable<
+  Extract<StreamEvent, { type: "trace.completed" }>["attempts"]
+>[number];
+
 const DEFAULT_LOGGER: ModelPlayerLogger = {
   error: (message, error) => console.error(message, error),
   warn: (message) => console.warn(message),
@@ -113,6 +118,41 @@ function traceUsage(
   };
 }
 
+function combinedTraceUsage(
+  generations: readonly GenerationResult[],
+): Extract<StreamEvent, { type: "trace.completed" }>["usage"] | undefined {
+  const usages = generations
+    .map((generated) => traceUsage(generated.usage, generated.providerMetadata))
+    .filter((usage) => usage !== undefined);
+  if (usages.length === 0) return undefined;
+
+  const reasoningTokens = usages.some((usage) => usage.reasoningTokens !== undefined)
+    ? usages.reduce((sum, usage) => sum + (usage.reasoningTokens ?? 0), 0)
+    : undefined;
+  const costUsd = usages.some((usage) => usage.costUsd !== undefined)
+    ? usages.reduce((sum, usage) => sum + (usage.costUsd ?? 0), 0)
+    : undefined;
+  return {
+    inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
+    outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+  };
+}
+
+function characters(value: string): string[] {
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return [...segmenter.segment(value)].map((part) => part.segment);
+}
+
+function characterLength(value: string): number {
+  return characters(value).length;
+}
+
+function truncateToLimit(value: string, limit: number): string {
+  return characters(value).slice(0, limit).join("").trim().replace(/\.+$/u, "").trim();
+}
+
 export class ModelPlayer implements Player {
   readonly name: string;
   readonly modelId: string;
@@ -121,7 +161,6 @@ export class ModelPlayer implements Player {
   private readonly reasoning: ReasoningConfig | null;
   private readonly temperature: number | undefined;
   private readonly safetyMarginMs: number;
-  private readonly answerLimit: number;
   private readonly fallback: string;
   private readonly sink: EventSink | undefined;
   private readonly logger: ModelPlayerLogger;
@@ -144,6 +183,10 @@ export class ModelPlayer implements Player {
       && (!Number.isInteger(config.reasoning.maxTokens) || config.reasoning.maxTokens < 1)) {
       throw new RangeError("Reasoning token budget must be a positive integer");
     }
+    if (config.answerLimit !== undefined
+      && (!Number.isInteger(config.answerLimit) || config.answerLimit < 1)) {
+      throw new RangeError("Answer limit must be a positive integer");
+    }
 
     this.name = config.displayName;
     this.modelId = config.model;
@@ -151,8 +194,7 @@ export class ModelPlayer implements Player {
     this.reasoning = config.reasoning ?? null;
     this.temperature = config.temperature;
     this.safetyMarginMs = config.safetyMarginMs ?? DEFAULT_SAFETY_MARGIN_MS;
-    this.answerLimit = config.answerLimit ?? DEFAULT_ANSWER_LIMIT;
-    this.fallback = sanitizeAnswer(config.fallback ?? DEFAULT_FALLBACK, { limit: this.answerLimit });
+    this.fallback = sanitizeAnswer(config.fallback ?? DEFAULT_FALLBACK);
     this.sink = config.sink;
     this.logger = config.logger ?? DEFAULT_LOGGER;
     this.onFailure = config.onFailure;
@@ -171,32 +213,85 @@ export class ModelPlayer implements Player {
   }
 
   async answer(prompt: string, ctx: PlayerContext): Promise<string> {
+    const maxLength = this.contextMaxLength(ctx);
     const request = [
       `Prompt: ${prompt}`,
-      `Write one funny answer of at most ${this.answerLimit} characters.`,
+      `Write one funny answer of at most ${maxLength} characters.`,
       "Return the answer only.",
     ].join("\n");
-    const generated = await this.generate(request, ctx, 128);
-    const answer = sanitizeAnswer(generated.text, {
-      limit: this.answerLimit,
-      fallback: this.fallback,
-    });
-    this.emitTrace(prompt, answer, generated, ctx);
+    const messages: ModelMessage[] = [{ role: "user", content: this.withFeedback(request, ctx) }];
+    const generations: GenerationResult[] = [];
+    const attempts: TraceAttempt[] = [];
+
+    let generated = await this.generate(messages, ctx, 128);
+    generations.push(generated);
+    let answer = sanitizeAnswer(generated.text, { fallback: this.fallback });
+    for (let reasks = 0; reasks < 2 && characterLength(answer) > maxLength; reasks += 1) {
+      if (!this.canReask(ctx)) break;
+      const reason = `That is ${characterLength(answer)} characters; the limit is ${maxLength}. Rewrite it so it fits, keep the joke.`;
+      attempts.push({ text: answer, reason });
+      messages.push(
+        { role: "assistant", content: generated.text },
+        { role: "user", content: reason },
+      );
+      generated = await this.generate(messages, ctx, 128);
+      generations.push(generated);
+      answer = sanitizeAnswer(generated.text, { fallback: this.fallback });
+    }
+
+    if (characterLength(answer) > maxLength) answer = truncateToLimit(answer, maxLength);
+    this.emitTrace(prompt, answer, generations, ctx, attempts);
     return answer;
   }
 
   async answerFinal(prompt: string, ctx: PlayerContext): Promise<[string, string, string]> {
+    const maxLength = this.contextMaxLength(ctx);
+    const fieldCount = Number.isInteger(ctx.fieldCount) && (ctx.fieldCount ?? 0) > 0
+      ? Math.min(3, ctx.fieldCount ?? 3)
+      : 3;
     const request = [
       `Thriplash prompt: ${prompt}`,
-      `Write exactly three funny answers, each at most ${this.answerLimit} characters.`,
-      "Return exactly three lines, one answer per line, with no numbering or other text.",
+      `Write exactly ${fieldCount} funny answers, each at most ${maxLength} characters.`,
+      `Return exactly ${fieldCount} lines, one answer per line, with no numbering or other text.`,
     ].join("\n");
-    const generated = await this.generate(request, ctx, 256);
-    const answers = parseFinalAnswers(generated.text, {
-      limit: this.answerLimit,
-      fallback: this.fallback,
+    const messages: ModelMessage[] = [{ role: "user", content: this.withFeedback(request, ctx) }];
+    const generations: GenerationResult[] = [];
+    const attempts: TraceAttempt[] = [];
+
+    let generated = await this.generate(messages, ctx, 256);
+    generations.push(generated);
+    const answers = parseFinalAnswers(generated.text, { fallback: this.fallback });
+    for (let reasks = 0; reasks < 2; reasks += 1) {
+      const overLimit = answers
+        .slice(0, fieldCount)
+        .map((answer, index) => ({ answer, index, length: characterLength(answer) }))
+        .filter((line) => line.length > maxLength);
+      if (overLimit.length === 0 || !this.canReask(ctx)) break;
+
+      const labels = overLimit.map((line) => `line ${line.index + 1} is ${line.length}`).join("; ");
+      const indices = overLimit.map((line) => line.index + 1).join(", ");
+      const reason = [
+        `${labels}; the limit is ${maxLength} characters per line.`,
+        `Rewrite only ${overLimit.length === 1 ? `line ${indices}` : `lines ${indices}`} so ${overLimit.length === 1 ? "it fits" : "they fit"}, keeping the jokes.`,
+        `Return only ${overLimit.length === 1 ? "the replacement line" : `${overLimit.length} replacement lines in that order`} with no numbering or other text.`,
+      ].join(" ");
+      attempts.push({ text: overLimit.map((line) => line.answer).join("\n"), reason });
+      messages.push(
+        { role: "assistant", content: generated.text },
+        { role: "user", content: reason },
+      );
+      generated = await this.generate(messages, ctx, 256);
+      generations.push(generated);
+      const replacements = this.parseFinalReplacements(generated.text, overLimit.length);
+      overLimit.forEach((line, index) => {
+        answers[line.index] = replacements[index] ?? this.fallback;
+      });
+    }
+
+    answers.forEach((answer, index) => {
+      if (characterLength(answer) > maxLength) answers[index] = truncateToLimit(answer, maxLength);
     });
-    this.emitTrace(prompt, answers.join("\n"), generated, ctx);
+    this.emitTrace(prompt, answers.join("\n"), generations, ctx, attempts);
     return answers;
   }
 
@@ -204,7 +299,7 @@ export class ModelPlayer implements Player {
     if (options.length === 0) {
       this.logWarn(`[${this.modelId}] vote requested without options; choosing index 0`);
       const generated: GenerationResult = { text: "", reasoning: "" };
-      this.emitTrace(prompt, "0", generated, ctx);
+      this.emitTrace(prompt, "0", [generated], ctx);
       return 0;
     }
 
@@ -217,7 +312,11 @@ export class ModelPlayer implements Player {
       listed,
       "Return one letter or number only.",
     ].join("\n");
-    const generated = await this.generate(request, ctx, 16);
+    const generated = await this.generate(
+      [{ role: "user", content: this.withFeedback(request, ctx) }],
+      ctx,
+      16,
+    );
     let choice = parseVote(generated.text, options.length);
     if (choice === undefined) {
       choice = this.randomChoice(options.length);
@@ -225,12 +324,12 @@ export class ModelPlayer implements Player {
         `[${this.modelId}] could not parse vote ${JSON.stringify(generated.text)}; randomly chose ${choice}`,
       );
     }
-    this.emitTrace(prompt, String(choice), generated, ctx);
+    this.emitTrace(prompt, String(choice), [generated], ctx);
     return choice;
   }
 
   private async generate(
-    prompt: string,
+    messages: ModelMessage[],
     ctx: PlayerContext,
     answerTokens: number,
   ): Promise<GenerationResult> {
@@ -256,7 +355,7 @@ export class ModelPlayer implements Player {
       const result = streamText({
         model: this.languageModel,
         system: SYSTEM_PROMPT,
-        prompt,
+        messages,
         maxOutputTokens,
         maxRetries: 0,
         abortSignal: controller.signal,
@@ -322,18 +421,20 @@ export class ModelPlayer implements Player {
   private emitTrace(
     prompt: string,
     answer: string,
-    generated: GenerationResult,
+    generations: readonly GenerationResult[],
     ctx: PlayerContext,
+    attempts: readonly TraceAttempt[] = [],
   ): void {
     if (!this.sink) return;
-    const usage = traceUsage(generated.usage, generated.providerMetadata);
+    const usage = combinedTraceUsage(generations);
     const event: StreamEvent = {
       type: "trace.completed",
       gameId: ctx.gameId,
       playerId: this.playerId,
       prompt,
-      reasoning: generated.reasoning,
+      reasoning: generations.map((generated) => generated.reasoning).filter(Boolean).join("\n\n"),
       answer,
+      ...(attempts.length === 0 ? {} : { attempts: [...attempts] }),
       ...(usage === undefined ? {} : { usage }),
       at: new Date().toISOString(),
     };
@@ -345,6 +446,25 @@ export class ModelPlayer implements Player {
     } catch (error) {
       this.logError(`[${this.modelId}] trace sink failed`, error);
     }
+  }
+
+  private contextMaxLength(ctx: PlayerContext): number {
+    if (Number.isInteger(ctx.maxLength) && ctx.maxLength > 0) return ctx.maxLength;
+    this.logWarn(`[${this.modelId}] invalid context maxLength; using ${DEFAULT_ANSWER_LIMIT}`);
+    return DEFAULT_ANSWER_LIMIT;
+  }
+
+  private withFeedback(request: string, ctx: PlayerContext): string {
+    return ctx.feedback ? `${ctx.feedback}\n\n${request}` : request;
+  }
+
+  private canReask(ctx: PlayerContext): boolean {
+    return Date.now() < ctx.deadlineMs - this.safetyMarginMs;
+  }
+
+  private parseFinalReplacements(value: string, count: number): string[] {
+    if (count === 1) return [sanitizeAnswer(value, { fallback: this.fallback })];
+    return parseFinalAnswers(value, { fallback: this.fallback }).slice(0, count);
   }
 
   private randomChoice(optionCount: number): number {
