@@ -171,14 +171,8 @@ tr:hover td { background: rgb(242 238 231 / 2%); }
 .games__date a { color: var(--ink); }
 .live-tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
 .board__id { display: block; font-size: 11px; color: var(--dim); font-family: var(--mono); }
-.board__rating { font-weight: 700; color: var(--ink); }
-.board__interval { width: 28%; min-width: 180px; position: relative; }
-.board__interval-head { width: 28%; }
-.range { position: absolute; top: 50%; height: 1px; background: var(--muted); }
-.range i { position: absolute; top: -3px; width: 1px; height: 7px; background: var(--accent); }
-.range__text { visibility: hidden; font-family: var(--mono); font-size: 11px; }
-.board__interval:hover .range { display: none; }
-.board__interval:hover .range__text { visibility: visible; color: var(--muted); }
+.board__rating { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.board__plus-minus { color: var(--dim); font-weight: 400; }
 
 .segmented { display: flex; align-items: center; gap: 0; }
 .segmented__label { margin-right: 12px; }
