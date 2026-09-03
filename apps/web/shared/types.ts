@@ -1,0 +1,112 @@
+import type {
+  Game,
+  GameEvent,
+  Matchup,
+  PlayerRef,
+  RoundNumber,
+  Thriplash,
+  VotePopulation,
+} from "@quiparena/core";
+
+export type PlayerActivity =
+  | "waiting"
+  | "thinking"
+  | "drafting"
+  | "submitted"
+  | "voting"
+  | "voted"
+  | "done"
+  | "error";
+
+export interface PlayerVoteState {
+  prompt: string;
+  options: string[];
+  choice: number | null;
+}
+
+export interface LivePlayerState {
+  player: PlayerRef;
+  lab: string;
+  avatarColor: string;
+  activity: PlayerActivity;
+  prompt: string | null;
+  reasoning: string;
+  draft: string | null;
+  answer: string | [string, string, string] | null;
+  vote: PlayerVoteState | null;
+}
+
+export interface AnswerTrace {
+  playerId: string;
+  prompt: string;
+  reasoning: string;
+  answer: string;
+  at: string;
+}
+
+export interface LiveVoteState {
+  round: RoundNumber;
+  prompt: string;
+  options: string[];
+  votes: Record<string, number>;
+  resolved: Matchup | null;
+}
+
+export type LivePhase = "waiting" | "playing" | "voting" | "ended" | "error";
+
+export interface LiveState {
+  gameId: string | null;
+  roomCode: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  updatedAt: string | null;
+  round: RoundNumber | null;
+  phase: LivePhase;
+  playerOrder: string[];
+  players: Record<string, LivePlayerState>;
+  currentVote: LiveVoteState | null;
+  matchups: Matchup[];
+  thriplash: Thriplash | null;
+  finalScores: Record<string, number> | null;
+  traces: Record<string, AnswerTrace[]>;
+  error: string | null;
+}
+
+export interface GameSummary {
+  id: string;
+  roomCode: string;
+  startedAt: string;
+  endedAt: string | null;
+  playerCount: number;
+  matchupCount: number;
+  winner: PlayerRef | null;
+  topScore: number | null;
+}
+
+export interface ArchivedGame {
+  game: Game;
+  events: GameEvent[];
+  traces: Record<string, AnswerTrace[]>;
+}
+
+export type LeaderboardPopulation = VotePopulation | "blended";
+
+export interface LeaderboardEntry {
+  modelId: string;
+  name: string;
+  lab: string;
+  rating: number;
+  intervalLow: number;
+  intervalHigh: number;
+  games: number;
+  wins: number;
+  matchupWins: number;
+  matchups: number;
+  matchupWinRate: number;
+}
+
+export interface LeaderboardResponse {
+  population: LeaderboardPopulation;
+  audienceVotingAvailable: boolean;
+  entries: LeaderboardEntry[];
+}

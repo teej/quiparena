@@ -1,0 +1,34 @@
+{
+  "name": "@quiparena/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "INGEST_TOKEN=${INGEST_TOKEN:-quiparena-dev} sh -c 'tsx watch server/index.ts & vite --host 127.0.0.1; kill 0'",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "NODE_ENV=production node dist/server/index.js",
+    "demo": "INGEST_TOKEN=${INGEST_TOKEN:-quiparena-demo} tsx server/demo-runner.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "@quiparena/core": "workspace:*",
+    "hono": "^4.13.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router": "^8.3.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tsx": "^4.23.13",
+    "typescript": "7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "4.1.11"
+  }
+}
