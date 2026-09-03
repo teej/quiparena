@@ -48,7 +48,17 @@ export async function listRecordedGames(db: ArenaDatabaseClient): Promise<Record
 
   return gameRows.map((game) => {
     const players = playersByGame.get(game.id) ?? [];
-    const scores = Object.entries(game.finalScores ?? {})
+    const observedByPlayer = new Map((game.observedScores ?? []).flatMap((standing) => {
+      const player = players.find((candidate) => (
+        candidate.name.normalize("NFC").trim().toLocaleLowerCase("en-US")
+          === standing.name.normalize("NFC").trim().toLocaleLowerCase("en-US")
+      ));
+      return player ? [[player.id, standing.score] as const] : [];
+    }));
+    const sourceScores = observedByPlayer.size > 0
+      ? { ...(game.finalScores ?? {}), ...Object.fromEntries(observedByPlayer) }
+      : game.finalScores ?? {};
+    const scores = Object.entries(sourceScores)
       .sort((left, right) => right[1] - left[1]);
     const top = scores[0];
     return {

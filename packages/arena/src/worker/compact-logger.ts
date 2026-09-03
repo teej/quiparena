@@ -77,6 +77,16 @@ export class CompactGameLogFormatter {
           .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
         return line(`  result ${this.#label(left.playerId)} ${leftVotes}–${rightVotes} ${this.#label(right.playerId)}`);
       }
+      case "matchup.observed": {
+        const result = event.winner === "tie"
+          ? "tie"
+          : `winner #${event.winner + 1}${event.percentages ? ` (${event.percentages.join("–")}%)` : ""}`;
+        return line(`  observed ${event.answers[0]} vs ${event.answers[1]} → ${result}`);
+      }
+      case "scoreboard.observed":
+        return line(`observed R${event.round} ${event.standings.map((standing) => `${standing.name}=${standing.score}`).join("  ")}`);
+      case "standings.observed":
+        return line(`observed final ${event.standings.map((standing) => `${standing.placement}. ${standing.name}=${standing.score}`).join("  ")}`);
       case "thriplash.resolved":
         return line(`  thriplash resolved (${event.thriplash.votes.length} votes)`);
       case "game.ended":

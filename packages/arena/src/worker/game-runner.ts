@@ -54,6 +54,8 @@ class GameAccumulator {
   startedAt?: string;
   endedAt?: string;
   finalScores?: Record<string, number>;
+  observedPlacements?: Record<string, number>;
+  #hasObservedStandings = false;
 
   constructor(readonly gameId: string, readonly roomCode: string) {}
 
@@ -75,9 +77,29 @@ class GameAccumulator {
       case "thriplash.resolved":
         this.thriplash = event.thriplash;
         break;
+      case "standings.observed": {
+        const playerByName = new Map([...this.players.values()].map((player) => [
+          normalizedName(player.name),
+          player.id,
+        ]));
+        const observed = Object.fromEntries(event.standings.flatMap((standing) => {
+          const playerId = playerByName.get(normalizedName(standing.name));
+          return playerId ? [[playerId, standing.score]] : [];
+        }));
+        const placements = Object.fromEntries(event.standings.flatMap((standing) => {
+          const playerId = playerByName.get(normalizedName(standing.name));
+          return playerId ? [[playerId, standing.placement]] : [];
+        }));
+        if (Object.keys(observed).length > 0) {
+          this.finalScores = observed;
+          this.observedPlacements = placements;
+          this.#hasObservedStandings = true;
+        }
+        break;
+      }
       case "game.ended":
         this.endedAt = event.at;
-        if (event.finalScores) this.finalScores = event.finalScores;
+        if (!this.#hasObservedStandings && event.finalScores) this.finalScores = event.finalScores;
         break;
       default:
         break;
@@ -96,8 +118,13 @@ class GameAccumulator {
       )),
       ...(this.thriplash === undefined ? {} : { thriplash: this.thriplash }),
       ...(this.finalScores === undefined ? {} : { finalScores: this.finalScores }),
+      ...(this.observedPlacements === undefined ? {} : { observedPlacements: this.observedPlacements }),
     };
   }
+}
+
+function normalizedName(value: string): string {
+  return value.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
 }
 
 /** Adds deterministic arena scores before an event reaches any worker sink. */
@@ -218,14 +245,38 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
   const connectedCredentials: SeatCredentials[] = [];
   const seats: Seat[] = [];
   const connected: Seat[] = [];
+  const audience = client.createAudienceObserver?.({
+    room,
+    gameId,
+    ...(options.recordDir === undefined
+      ? {}
+      : { recordFile: join(options.recordDir, "ecast", "audience.jsonl") }),
+    onEvent: emitScored,
+  });
   const assigned = assignDisplayNames(options.roster);
   const abort = abortPromise(options.signal);
   let timeout: NodeJS.Timeout | undefined;
   const timedOut = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => reject(new GameTimeoutError(timeoutMs)), timeoutMs);
   });
+  let audienceConnected = false;
 
   try {
+    if (audience) {
+      try {
+        await Promise.race([audience.connect(), abort.promise, timedOut]);
+        audienceConnected = true;
+      } catch (error) {
+        if (error instanceof GameTimeoutError || error instanceof GameAbortedError) throw error;
+        bus.emit({
+          type: "harness.error",
+          gameId,
+          message: `Could not join audience observer: ${error instanceof Error ? error.message : String(error)}`,
+          at: new Date().toISOString(),
+        });
+      }
+    }
+
     for (const [index, entry] of assigned.entries()) {
       if (options.signal?.aborted) throw new GameAbortedError();
       let player: Player;
@@ -291,13 +342,30 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
     }
 
     await Promise.race([ended, abort.promise, timedOut]);
+    if (audienceConnected && audience?.waitForFinalStandings) {
+      try {
+        await Promise.race([audience.waitForFinalStandings(), abort.promise, timedOut]);
+      } catch (error) {
+        if (error instanceof GameTimeoutError || error instanceof GameAbortedError) throw error;
+        bus.emit({
+          type: "harness.error",
+          gameId,
+          reason: "audience-parse",
+          message: error instanceof Error ? error.message : String(error),
+          at: new Date().toISOString(),
+        });
+      }
+    }
     await bus.flush();
     return accumulator.game();
   } finally {
     if (timeout) clearTimeout(timeout);
     abort.dispose();
     unsubscribe();
-    await Promise.allSettled(seats.map((seat) => seat.close()));
+    await Promise.allSettled([
+      ...seats.map((seat) => seat.close()),
+      ...(audience ? [audience.close()] : []),
+    ]);
     await bus.flush();
   }
 }

@@ -23,6 +23,7 @@ export type ScoreMap = Record<string, number>;
 export interface ObservedScore {
   name: string;
   score: number;
+  placement?: number;
 }
 
 export const gameStatus = pgEnum("game_status", ["created", "running", "completed", "failed", "abandoned"]);
@@ -66,6 +67,8 @@ export const gamePlayers = pgTable("game_players", {
   vip: boolean("vip").notNull().default(false),
   placement: integer("placement"),
   totalScore: integer("total_score"),
+  observedPlacement: integer("observed_placement"),
+  observedScore: integer("observed_score"),
 }, (table) => [
   primaryKey({ columns: [table.gameId, table.playerId] }),
   uniqueIndex("game_players_game_seat_uidx").on(table.gameId, table.seat),

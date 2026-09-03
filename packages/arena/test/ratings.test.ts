@@ -192,4 +192,62 @@ describe("Bradley-Terry ratings", () => {
       await db.close();
     }
   });
+
+  it("uses observed placements for stats and produces audience ratings from aggregate game votes", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    try {
+      await db.insert(models).values([
+        { slug: "lab/alpha", displayName: "Alpha", lab: "lab", enabled: true, config: {} },
+        { slug: "lab/beta", displayName: "Beta", lab: "lab", enabled: true, config: {} },
+      ]);
+      await db.insert(games).values({
+        id: "audience-rating",
+        roomCode: "RATE",
+        startedAt: new Date("2026-09-02T20:00:00Z"),
+        endedAt: new Date("2026-09-02T20:10:00Z"),
+        status: "completed",
+      });
+      await db.insert(gamePlayers).values([
+        {
+          gameId: "audience-rating", playerId: "a", name: "Alpha", modelSlug: "lab/alpha", seat: 0,
+          placement: 1, totalScore: 9_999, observedPlacement: 2, observedScore: 100,
+        },
+        {
+          gameId: "audience-rating", playerId: "b", name: "Beta", modelSlug: "lab/beta", seat: 1,
+          placement: 2, totalScore: 1, observedPlacement: 1, observedScore: 200,
+        },
+      ]);
+      await db.insert(matchups).values({
+        id: "audience-rating-match", gameId: "audience-rating", round: 1, index: 0, prompt: "Rate it",
+      });
+      await db.insert(answers).values([
+        { id: "audience-rating-a", gameId: "audience-rating", matchupId: "audience-rating-match", playerId: "a", answerIndex: 0, text: "A" },
+        { id: "audience-rating-b", gameId: "audience-rating", matchupId: "audience-rating-match", playerId: "b", answerIndex: 1, text: "B" },
+      ]);
+      await db.insert(votes).values({
+        id: "audience-rating-vote",
+        gameId: "audience-rating",
+        matchupId: "audience-rating-match",
+        voterId: null,
+        population: "audience",
+        source: "game",
+        choice: 1,
+        weight: 12,
+      });
+
+      const run = await computeRatings(db, { bootstrapResamples: 0 });
+      expect(run.populations.audience).toHaveLength(2);
+      expect(run.populations.audience[0]).toMatchObject({
+        modelSlug: "lab/beta",
+        comparisons: 12,
+        stats: { wins: 1, avgPlacement: 1, avgPoints: 200 },
+      });
+      expect(run.populations.audience[1]).toMatchObject({
+        modelSlug: "lab/alpha",
+        stats: { wins: 0, avgPlacement: 2, avgPoints: 100 },
+      });
+    } finally {
+      await db.close();
+    }
+  });
 });

@@ -11,6 +11,7 @@ import { WorkerEventBus } from "../src/worker/bus.js";
 import { FakeHarness } from "../src/worker/fake-harness.js";
 import { runGame, type RunGameOptions } from "../src/worker/game-runner.js";
 import { loadLobbyHistoryFromApi, runLoop } from "../src/worker/loop.js";
+import type { CreateAudienceObserverOptions } from "../src/worker/seat.js";
 import { DbSink } from "../src/worker/sinks.js";
 
 function roster(count: number): RosterModel[] {
@@ -74,6 +75,47 @@ describe("arena worker", () => {
     } finally {
       await db.close();
     }
+  });
+
+  it("starts an audience observer, waits for its final standings, and uses them for the returned game", async () => {
+    class ObservedHarness extends FakeHarness {
+      connected = false;
+      closed = false;
+
+      createAudienceObserver(options: CreateAudienceObserverOptions) {
+        return {
+          connect: async () => { this.connected = true; },
+          waitForFinalStandings: async () => {
+            options.onEvent({
+              type: "standings.observed",
+              gameId: options.gameId,
+              standings: [
+                { name: "Model 2", score: 999, placement: 1 },
+                { name: "Model 1", score: 500, placement: 2 },
+                { name: "Model 3", score: 0, placement: 3 },
+              ],
+              winner: "Model 2",
+              raw: {},
+              at: new Date().toISOString(),
+            });
+          },
+          close: async () => { this.closed = true; },
+        };
+      }
+    }
+
+    const harness = new ObservedHarness({ playerCount: 3 });
+    const game = await runGame({
+      roomCode: "FAKE",
+      roster: roster(3),
+      gameClient: harness,
+      playerFactory: scripted,
+      timeoutMs: 10_000,
+    });
+    expect(harness.connected).toBe(true);
+    expect(harness.closed).toBe(true);
+    expect(game.finalScores).toEqual({ "2": 500, "3": 999, "4": 0 });
+    expect(game.observedPlacements).toEqual({ "2": 2, "3": 1, "4": 3 });
   });
 
   it("stops after a completed game exceeds the daily spend cap", async () => {

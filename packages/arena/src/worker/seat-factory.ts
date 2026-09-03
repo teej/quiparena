@@ -1,5 +1,6 @@
 import type { AnyEvent, GameEvent, StreamEvent } from "@quiparena/core";
 import {
+  AudienceObserver,
   EcastConnection,
   Quiplash3Seat,
   lookupRoom,
@@ -12,7 +13,15 @@ import {
 import { ModelPlayer, type ModelPlayerConfig } from "../model-player.js";
 import type { RosterModel } from "../registry.js";
 import type { EventPublisher, WorkerEventBus } from "./bus.js";
-import type { CreateSeatOptions, GameClient, Seat, SeatWelcome, WorkerRoom } from "./seat.js";
+import type {
+  AudienceObserverHandle,
+  CreateAudienceObserverOptions,
+  CreateSeatOptions,
+  GameClient,
+  Seat,
+  SeatWelcome,
+  WorkerRoom,
+} from "./seat.js";
 
 const playerBindings = new WeakMap<Player, (playerId: string) => void>();
 
@@ -192,6 +201,16 @@ export class RealGameClient implements GameClient {
   createSeat(options: CreateSeatOptions): Seat {
     const bus = new BusForwarder(options.onEvent);
     return buildHarnessSeat(options, bus);
+  }
+
+  createAudienceObserver(options: CreateAudienceObserverOptions): AudienceObserverHandle {
+    return new AudienceObserver({
+      gameId: options.gameId,
+      room: options.room as unknown as RoomInfo,
+      lookupRoom,
+      ...(options.recordFile === undefined ? {} : { recordFile: options.recordFile }),
+      onEvent: options.onEvent,
+    });
   }
 }
 

@@ -15,6 +15,13 @@
       "when": 1788409468641,
       "tag": "0001_wet_prowler",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788411588500,
+      "tag": "0002_goofy_mordo",
+      "breakpoints": true
     }
   ]
 }

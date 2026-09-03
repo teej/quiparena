@@ -92,17 +92,30 @@ export async function loadLobbyHistoryFromDb(
   const playerRows = await db.select().from(gamePlayers)
     .where(inArray(gamePlayers.gameId, gameRows.map((game) => game.id)))
     .orderBy(asc(gamePlayers.gameId), asc(gamePlayers.seat));
-  return gameRows.map((game) => ({
-    id: game.id,
-    status: "completed",
-    players: playerRows.filter((player) => player.gameId === game.id).map((player) => ({
-      id: player.playerId,
-      playerId: player.playerId,
-      modelId: player.modelSlug,
-      modelSlug: player.modelSlug,
-      ...(player.placement === null ? {} : { placement: player.placement }),
-      ...(player.totalScore === null ? {} : { totalScore: player.totalScore }),
-    })),
-    ...(game.finalScores === null ? {} : { finalScores: game.finalScores }),
-  }));
+  return gameRows.map((game) => {
+    const players = playerRows.filter((player) => player.gameId === game.id);
+    const observedFinalScores = Object.fromEntries(players.flatMap((player) => (
+      player.observedScore === null ? [] : [[player.playerId, player.observedScore]]
+    )));
+    const finalScores = Object.keys(observedFinalScores).length > 0
+      ? { ...(game.finalScores ?? {}), ...observedFinalScores }
+      : game.finalScores;
+    return {
+      id: game.id,
+      status: "completed",
+      players: players.map((player) => ({
+        id: player.playerId,
+        playerId: player.playerId,
+        modelId: player.modelSlug,
+        modelSlug: player.modelSlug,
+        ...((player.observedPlacement ?? player.placement) === null
+          ? {}
+          : { placement: player.observedPlacement ?? player.placement! }),
+        ...((player.observedScore ?? player.totalScore) === null
+          ? {}
+          : { totalScore: player.observedScore ?? player.totalScore! }),
+      })),
+      ...(finalScores === null ? {} : { finalScores }),
+    };
+  });
 }

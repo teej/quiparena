@@ -41,4 +41,31 @@ describe("CompactGameLogFormatter", () => {
       text: "!!! HARNESS ERROR p1: watchdog detected a missed action [reason=state-timeout state=MakeSingleChoice:42 missed=2] !!!",
     });
   });
+
+  it("prints audience-observed results and final standings", () => {
+    const formatter = new CompactGameLogFormatter();
+    const result = formatter.format({
+      type: "matchup.observed",
+      gameId: "g",
+      prompt: "Prompt",
+      answers: ["LEFT", "RIGHT"],
+      winner: 1,
+      percentages: [17, 83],
+      raw: {},
+      at,
+    });
+    const standings = formatter.format({
+      type: "standings.observed",
+      gameId: "g",
+      standings: [
+        { name: "Beta", score: 2000, placement: 1 },
+        { name: "Alpha", score: 1000, placement: 2 },
+      ],
+      winner: "Beta",
+      raw: {},
+      at,
+    });
+    expect(result[0]?.text).toBe("  observed LEFT vs RIGHT → winner #2 (17–83%)");
+    expect(standings[0]?.text).toBe("observed final 1. Beta=2000  2. Alpha=1000");
+  });
 });

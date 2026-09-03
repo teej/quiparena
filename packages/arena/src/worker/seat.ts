@@ -38,10 +38,25 @@ export interface CreateSeatOptions {
   onEvent: (event: AnyEvent) => void;
 }
 
+export interface AudienceObserverHandle {
+  connect(): Promise<unknown>;
+  close(): Promise<void>;
+  waitForFinalStandings?(): Promise<void>;
+}
+
+export interface CreateAudienceObserverOptions {
+  room: WorkerRoom;
+  gameId: string;
+  recordFile?: string;
+  onEvent: (event: AnyEvent) => void;
+}
+
 /** Construction boundary implemented by the real ecast adapter and FakeHarness. */
 export interface GameClient {
   /** True when the client already emits matchup/thriplash resolution events. */
   readonly eventsAreAggregated?: boolean;
   lookupRoom(roomCode: string): Promise<WorkerRoom>;
   createSeat(options: CreateSeatOptions): Seat;
+  /** Optional for synthetic clients; the production adapter always provides it. */
+  createAudienceObserver?(options: CreateAudienceObserverOptions): AudienceObserverHandle;
 }

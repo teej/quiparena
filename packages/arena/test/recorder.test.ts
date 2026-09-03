@@ -3,7 +3,8 @@ import { count } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { openDb } from "../src/db/client.js";
-import { answers, events, traces, votes } from "../src/db/schema.js";
+import { hasAudienceVotes } from "../src/db/queries.js";
+import { answers, events, gamePlayers, games, traces, votes } from "../src/db/schema.js";
 import { Recorder } from "../src/recorder.js";
 
 const expectedGame: Game = {
@@ -141,6 +142,98 @@ describe("Recorder", () => {
       expect(answerCount?.value).toBe(6);
       expect(voteCount?.value).toBe(3);
       expect(traceCount?.value).toBe(3);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("round-trips observed standings and reconciles aggregate audience votes by prompt and answers", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    const warnings: string[] = [];
+    const recorder = new Recorder(db, { logger: { warn: (message) => warnings.push(message) } });
+    const at = "2026-09-02T22:00:00.000Z";
+    const matchup = {
+      id: "observed-match",
+      gameId: "observed-game",
+      round: 1 as const,
+      index: 0,
+      prompt: "A <b>very</b> good prompt",
+      answers: [
+        { playerId: "p1", text: "Quiet answer", blank: false },
+        { playerId: "p2", text: "LOUD ANSWER", blank: false },
+      ] as const,
+      votes: [{ voterId: "p1", population: "player" as const, choice: 0 }],
+    };
+    const observedEvents: GameEvent[] = [
+      { type: "game.created", gameId: "observed-game", roomCode: "OBSV", at },
+      { type: "player.joined", gameId: "observed-game", player: { id: "p1", name: "Alpha", modelId: "lab/alpha" }, at },
+      { type: "player.joined", gameId: "observed-game", player: { id: "p2", name: "Beta", modelId: "lab/beta" }, at },
+      { type: "matchup.resolved", gameId: "observed-game", matchup, at },
+      {
+        type: "audience.votes",
+        gameId: "observed-game",
+        prompt: "A very good prompt Vote for your favorite",
+        counts: [4, 0],
+        raw: { opcode: "audience/count-group" },
+        at,
+      },
+      {
+        type: "matchup.observed",
+        gameId: "observed-game",
+        prompt: "A very good prompt",
+        answers: ["loud answer", "QUIET ANSWER"],
+        winner: 0,
+        percentages: [80, 20],
+        raw: { opcode: "object" },
+        at,
+      },
+      {
+        type: "standings.observed",
+        gameId: "observed-game",
+        standings: [
+          { name: "BETA", score: 1234, placement: 1 },
+          { name: "alpha", score: 999, placement: 2 },
+        ],
+        winner: "BETA",
+        raw: { opcode: "object" },
+        at,
+      },
+      { type: "game.ended", gameId: "observed-game", at },
+    ];
+    try {
+      for (const event of observedEvents) await recorder.record(event);
+
+      const [game] = await db.select().from(games);
+      expect(game).toMatchObject({
+        finalScores: { p1: 200, p2: 900 },
+        observedScores: [
+          { name: "BETA", score: 1234, placement: 1 },
+          { name: "alpha", score: 999, placement: 2 },
+        ],
+      });
+      expect(await db.select({
+        playerId: gamePlayers.playerId,
+        observedScore: gamePlayers.observedScore,
+        observedPlacement: gamePlayers.observedPlacement,
+      }).from(gamePlayers)).toEqual(expect.arrayContaining([
+        { playerId: "p1", observedScore: 999, observedPlacement: 2 },
+        { playerId: "p2", observedScore: 1234, observedPlacement: 1 },
+      ]));
+      const audienceRows = (await db.select().from(votes)).filter((vote) => vote.population === "audience");
+      expect(audienceRows).toHaveLength(1);
+      expect(audienceRows[0]).toMatchObject({
+        voterId: null,
+        population: "audience",
+        source: "game",
+        choice: 1,
+        weight: 4,
+      });
+      await expect(hasAudienceVotes(db)).resolves.toBe(true);
+      expect((await recorder.loadGame("observed-game"))?.finalScores).toEqual({ p1: 999, p2: 1234 });
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining("player=Alpha computed=200 observed=999"),
+        expect.stringContaining("player=Beta computed=900 observed=1234"),
+      ]));
     } finally {
       await db.close();
     }

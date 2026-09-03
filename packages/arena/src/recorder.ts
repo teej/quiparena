@@ -31,12 +31,31 @@ import {
 } from "./db/schema.js";
 
 type TraceEvent = Extract<StreamEvent, { type: "trace.completed" }>;
+type AudienceVotesEvent = Extract<GameEvent, { type: "audience.votes" }>;
+type MatchupObservedEvent = Extract<GameEvent, { type: "matchup.observed" }>;
 type TraceKind = "answer" | "final" | "vote";
 
 interface SubmissionMeta {
   blank: boolean;
   latencyMs: number;
 }
+
+interface PendingObservedMatchup {
+  observed: MatchupObservedEvent;
+  audienceVotes?: AudienceVotesEvent;
+}
+
+export interface RecorderLogger {
+  warn(message: string): void;
+}
+
+export interface RecorderOptions {
+  logger?: RecorderLogger;
+}
+
+const DEFAULT_RECORDER_LOGGER: RecorderLogger = {
+  warn: (message) => console.warn(message),
+};
 
 function eventDate(at: string): Date {
   const date = new Date(at);
@@ -71,6 +90,48 @@ function displayName(value: string): string {
   return Array.from(value.trim() || "Player").slice(0, 12).join("");
 }
 
+function normalizedText(value: string): string {
+  return decodeHtml(value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:div|p|li)>/gi, "\n")
+    .replace(/<[^>]*>/g, " "))
+    .normalize("NFC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase("en-US");
+}
+
+function normalizedPrompt(value: string): string {
+  return normalizedText(value).replace(/\s*vote for your favorite\s*$/i, "").trim();
+}
+
+function decodeHtml(value: string): string {
+  return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, body: string) => {
+    const lower = body.toLocaleLowerCase("en-US");
+    if (lower.startsWith("#x")) return String.fromCodePoint(Number.parseInt(lower.slice(2), 16));
+    if (lower.startsWith("#")) return String.fromCodePoint(Number.parseInt(lower.slice(1), 10));
+    return ({ amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " } as Record<string, string>)[lower]
+      ?? entity;
+  });
+}
+
+function matchedAnswerIndexes(
+  observed: readonly [string, string],
+  stored: readonly { answerIndex: number; text: string }[],
+): [number, number] | undefined {
+  const used = new Set<number>();
+  const matched = observed.map((answer) => {
+    const row = stored.find((candidate) => (
+      !used.has(candidate.answerIndex) && normalizedText(candidate.text) === normalizedText(answer)
+    ));
+    if (row) used.add(row.answerIndex);
+    return row?.answerIndex;
+  });
+  return matched[0] === undefined || matched[1] === undefined
+    ? undefined
+    : [matched[0], matched[1]];
+}
+
 function modelLab(slug: string): string {
   return slug.split("/", 1)[0]?.trim() || "unknown";
 }
@@ -87,8 +148,13 @@ function traceUsage(event: TraceEvent): Record<string, unknown> | null {
 export class Recorder {
   private readonly submissions = new Map<string, SubmissionMeta>();
   private readonly traceKinds = new Map<string, TraceKind>();
+  private readonly pendingAudienceVotes = new Map<string, AudienceVotesEvent[]>();
+  private readonly pendingObservedMatchups = new Map<string, PendingObservedMatchup[]>();
+  private readonly logger: RecorderLogger;
 
-  constructor(readonly db: ArenaDatabaseClient) {}
+  constructor(readonly db: ArenaDatabaseClient, options: RecorderOptions = {}) {
+    this.logger = options.logger ?? DEFAULT_RECORDER_LOGGER;
+  }
 
   async consume(event: GameEvent | StreamEvent): Promise<void> {
     await this.record(event);
@@ -197,23 +263,58 @@ export class Recorder {
 
       case "matchup.resolved":
         await this.recordMatchup(db, event.matchup, event.at);
+        await this.reconcileObservedMatchups(db, event.gameId);
         break;
 
       case "thriplash.resolved":
         await this.recordThriplash(db, event.thriplash, event.at);
+        await this.reconcileObservedMatchups(db, event.gameId);
+        break;
+
+      case "audience.votes": {
+        const pending = this.pendingAudienceVotes.get(event.gameId) ?? [];
+        pending.push(event);
+        this.pendingAudienceVotes.set(event.gameId, pending);
+        break;
+      }
+
+      case "matchup.observed": {
+        const voteEvents = this.pendingAudienceVotes.get(event.gameId) ?? [];
+        const matching = voteEvents.filter((candidate) => (
+          normalizedPrompt(candidate.prompt) === normalizedPrompt(event.prompt)
+        ));
+        this.pendingAudienceVotes.set(
+          event.gameId,
+          voteEvents.filter((candidate) => normalizedPrompt(candidate.prompt) !== normalizedPrompt(event.prompt)),
+        );
+        const pending = this.pendingObservedMatchups.get(event.gameId) ?? [];
+        pending.push({
+          observed: event,
+          ...(matching.at(-1) === undefined ? {} : { audienceVotes: matching.at(-1)! }),
+        });
+        this.pendingObservedMatchups.set(event.gameId, pending);
+        await this.reconcileObservedMatchups(db, event.gameId);
+        break;
+      }
+
+      case "standings.observed":
+        await this.recordObservedStandings(db, event);
         break;
 
       case "game.ended": {
+        await this.reconcileObservedMatchups(db, event.gameId);
         const finalScores = await finalizeGameScores(db, event.gameId);
         await db.update(games).set({
           endedAt: eventDate(event.at),
           status: "completed",
           finalScores: finalScores ?? {},
         }).where(eq(games.id, event.gameId));
+        await this.logScoreMismatches(db, event.gameId, finalScores ?? {});
         break;
       }
 
       case "round.started":
+      case "scoreboard.observed":
       case "answer.rejected":
       case "vote.cast":
       case "harness.error":
@@ -383,6 +484,139 @@ export class Recorder {
     }
   }
 
+  private async recordObservedStandings(
+    db: ArenaDatabaseClient,
+    event: Extract<GameEvent, { type: "standings.observed" }>,
+  ): Promise<void> {
+    await db.update(games).set({ observedScores: event.standings })
+      .where(eq(games.id, event.gameId));
+    const players = await db.select({
+      playerId: gamePlayers.playerId,
+      name: gamePlayers.name,
+    }).from(gamePlayers).where(eq(gamePlayers.gameId, event.gameId));
+    const playersByName = new Map(players.map((player) => [normalizedText(player.name), player]));
+    for (const standing of event.standings) {
+      const player = playersByName.get(normalizedText(standing.name));
+      if (!player) {
+        this.logger.warn(
+          `[quiparena/recorder] observed standing did not match a seat: game=${event.gameId} name=${standing.name}`,
+        );
+        continue;
+      }
+      await db.update(gamePlayers).set({
+        observedScore: standing.score,
+        observedPlacement: standing.placement,
+      }).where(and(
+        eq(gamePlayers.gameId, event.gameId),
+        eq(gamePlayers.playerId, player.playerId),
+      ));
+    }
+    const [storedGame] = await db.select({
+      status: games.status,
+      finalScores: games.finalScores,
+    }).from(games).where(eq(games.id, event.gameId)).limit(1);
+    if (storedGame?.status === "completed" && storedGame.finalScores) {
+      await this.logScoreMismatches(db, event.gameId, storedGame.finalScores);
+    }
+  }
+
+  private async reconcileObservedMatchups(
+    db: ArenaDatabaseClient,
+    gameId: string,
+  ): Promise<void> {
+    const pending = this.pendingObservedMatchups.get(gameId);
+    if (!pending?.length) return;
+    const [matchupRows, answerRows, thriplashRows] = await Promise.all([
+      db.select().from(matchups).where(eq(matchups.gameId, gameId)),
+      db.select().from(answers).where(eq(answers.gameId, gameId)),
+      db.select().from(thriplashes).where(eq(thriplashes.gameId, gameId)).limit(1),
+    ]);
+    const unresolved: PendingObservedMatchup[] = [];
+
+    for (const item of pending) {
+      const observedAnswers = item.observed.answers;
+      let target: {
+        matchupId: string | null;
+        thriplashId: string | null;
+        choices: [number, number];
+      } | undefined;
+
+      for (const matchup of matchupRows) {
+        if (normalizedPrompt(matchup.prompt) !== normalizedPrompt(item.observed.prompt)) continue;
+        const storedAnswers = answerRows.filter((answer) => answer.matchupId === matchup.id);
+        const choices = matchedAnswerIndexes(observedAnswers, storedAnswers);
+        if (choices) {
+          target = { matchupId: matchup.id, thriplashId: null, choices };
+          break;
+        }
+      }
+
+      const thriplash = thriplashRows[0];
+      if (!target && thriplash
+        && normalizedPrompt(thriplash.prompt) === normalizedPrompt(item.observed.prompt)) {
+        const storedAnswers = answerRows.filter((answer) => answer.thriplashId === thriplash.id);
+        const choices = matchedAnswerIndexes(observedAnswers, storedAnswers);
+        if (choices) target = { matchupId: null, thriplashId: thriplash.id, choices };
+      }
+
+      if (!target) {
+        unresolved.push(item);
+        continue;
+      }
+      if (!item.audienceVotes) continue;
+      for (const [localChoice, countValue] of item.audienceVotes.counts.entries()) {
+        if (!Number.isFinite(countValue) || countValue <= 0) continue;
+        const choice = target.choices[localChoice];
+        if (choice === undefined) continue;
+        const identity = {
+          gameId,
+          matchupId: target.matchupId,
+          thriplashId: target.thriplashId,
+          prompt: normalizedPrompt(item.observed.prompt),
+          answers: item.observed.answers.map(normalizedText),
+          choice,
+        };
+        await db.insert(votes).values({
+          id: stableId("audience-vote", identity),
+          gameId,
+          matchupId: target.matchupId,
+          thriplashId: target.thriplashId,
+          voterId: null,
+          population: "audience",
+          source: "game",
+          choice,
+          weight: countValue,
+          createdAt: eventDate(item.audienceVotes.at),
+        }).onConflictDoUpdate({
+          target: votes.id,
+          set: { weight: countValue },
+        });
+      }
+    }
+    this.pendingObservedMatchups.set(gameId, unresolved);
+  }
+
+  private async logScoreMismatches(
+    db: ArenaDatabaseClient,
+    gameId: string,
+    computed: Readonly<Record<string, number>>,
+  ): Promise<void> {
+    const players = await db.select({
+      playerId: gamePlayers.playerId,
+      name: gamePlayers.name,
+      observedScore: gamePlayers.observedScore,
+    }).from(gamePlayers).where(eq(gamePlayers.gameId, gameId));
+    for (const player of players) {
+      if (player.observedScore === null) continue;
+      const computedScore = computed[player.playerId];
+      if (computedScore === player.observedScore) continue;
+      this.logger.warn(
+        `[quiparena/recorder] score mismatch game=${gameId} player=${player.name}`
+        + ` computed=${computedScore ?? "missing"} observed=${player.observedScore}`,
+      );
+    }
+  }
+
   private async inferTraceKind(event: TraceEvent): Promise<TraceKind> {
     const key = submissionKey(event.gameId, event.playerId, event.prompt);
     const cached = this.traceKinds.get(key);
@@ -524,6 +758,20 @@ export async function loadGame(db: ArenaDatabaseClient, gameId: string): Promise
     };
   }
 
+  const playerByName = new Map(playerRows.map((player) => [normalizedText(player.name), player.playerId]));
+  const observedFinalScores = game.observedScores
+    ? Object.fromEntries(game.observedScores.flatMap((standing) => {
+        const playerId = playerByName.get(normalizedText(standing.name));
+        return playerId ? [[playerId, standing.score]] : [];
+      }))
+    : undefined;
+  const finalScores = observedFinalScores && Object.keys(observedFinalScores).length > 0
+    ? { ...(game.finalScores ?? {}), ...observedFinalScores }
+    : game.finalScores;
+  const observedPlacements = Object.fromEntries(playerRows.flatMap((player) => (
+    player.observedPlacement === null ? [] : [[player.playerId, player.observedPlacement]]
+  )));
+
   return {
     id: game.id,
     roomCode: game.roomCode,
@@ -536,6 +784,7 @@ export async function loadGame(db: ArenaDatabaseClient, gameId: string): Promise
     })),
     matchups: gameMatchups,
     ...(finalRound === undefined ? {} : { thriplash: finalRound }),
-    ...(game.finalScores === null ? {} : { finalScores: game.finalScores }),
+    ...(finalScores === null || finalScores === undefined ? {} : { finalScores }),
+    ...(Object.keys(observedPlacements).length === 0 ? {} : { observedPlacements }),
   };
 }

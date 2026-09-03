@@ -1,4 +1,5 @@
 export * from "./aggregator.js";
+export * from "./audience.js";
 export * from "./credentials.js";
 export * from "./ecast.js";
 export * from "./player.js";

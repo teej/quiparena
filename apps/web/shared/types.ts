@@ -68,6 +68,7 @@ export interface LiveState {
   matchups: Matchup[];
   thriplash: Thriplash | null;
   finalScores: Record<string, number> | null;
+  observedPlacements: Record<string, number> | null;
   traces: Record<string, AnswerTrace[]>;
   error: string | null;
 }

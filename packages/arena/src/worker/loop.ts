@@ -238,9 +238,16 @@ export async function loadLobbyHistoryFromApi(
       };
       finalScores = scoreGame(scoreable).finalScores;
     }
-    const placements = finalScores
-      ? placementsFromScores(finalScores, corePlayers.map((player) => player.id))
-      : {};
+    const observedPlacements = isRecord(game["observedPlacements"])
+      ? Object.fromEntries(Object.entries(game["observedPlacements"]).filter(
+          (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ))
+      : undefined;
+    const placements = observedPlacements && Object.keys(observedPlacements).length > 0
+      ? observedPlacements
+      : finalScores
+        ? placementsFromScores(finalScores, corePlayers.map((player) => player.id))
+        : {};
     const players = corePlayers.map((player) => ({
       id: player.id,
       playerId: player.id,
@@ -261,7 +268,9 @@ export async function loadLobbyHistoryFromApi(
 function toHistory(game: Game, failures: ReadonlySet<string>): LobbyGameHistory {
   const rankingScores = lobbyScores(game);
   const ordered = Object.entries(rankingScores).sort((left, right) => right[1] - left[1]);
-  const placement = new Map(ordered.map(([playerId], index) => [playerId, index + 1]));
+  const placement = new Map(game.observedPlacements
+    ? Object.entries(game.observedPlacements)
+    : ordered.map(([playerId], index): [string, number] => [playerId, index + 1]));
   return {
     id: game.id,
     players: game.players.map((player) => {

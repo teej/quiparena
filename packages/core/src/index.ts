@@ -75,6 +75,19 @@ export interface Game {
   thriplash?: Thriplash;
   /** Final standings if observed: playerId -> total score. */
   finalScores?: Record<string, number>;
+  /** Audience-narrated final placement by player id, when available. */
+  observedPlacements?: Record<string, number>;
+}
+
+/** A name/score row narrated by Quiplash's audience accessibility projection. */
+export interface ObservedStanding {
+  name: string;
+  score: number;
+}
+
+/** A final name/score row, including the narrated ordinal placement. */
+export interface ObservedFinalStanding extends ObservedStanding {
+  placement: number;
 }
 
 /** Raw controller display values retained alongside the harness's plain-text projection. */
@@ -100,6 +113,10 @@ export type GameEvent =
   | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; choiceKey?: string | number; answer?: string; controller?: HarnessControllerRaw; at: string }
   | { type: "matchup.resolved"; gameId: string; matchup: Matchup; at: string }
   | { type: "thriplash.resolved"; gameId: string; thriplash: Thriplash; at: string }
+  | { type: "matchup.observed"; gameId: string; prompt: string; answers: [string, string]; winner: 0 | 1 | "tie"; percentages?: [number, number]; raw: unknown; at: string }
+  | { type: "scoreboard.observed"; gameId: string; round: RoundNumber; standings: ObservedStanding[]; raw: unknown; at: string }
+  | { type: "standings.observed"; gameId: string; standings: ObservedFinalStanding[]; winner: string; raw: unknown; at: string }
+  | { type: "audience.votes"; gameId: string; prompt: string; counts: number[]; raw: unknown; at: string }
   | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; at: string }
   | { type: "harness.error"; gameId?: string; playerId?: string; message: string; reason?: string; stateKey?: string; missedOccurrences?: number; at: string };
 

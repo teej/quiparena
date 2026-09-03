@@ -286,15 +286,17 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
     const played = gameSets.get(player.modelSlug) ?? new Set<string>();
     played.add(player.gameId);
     gameSets.set(player.modelSlug, played);
-    if (player.placement !== null) {
+    const placement = player.observedPlacement ?? player.placement;
+    const totalScore = player.observedScore ?? player.totalScore;
+    if (placement !== null) {
       const values = placements.get(player.modelSlug) ?? [];
-      values.push(player.placement);
+      values.push(placement);
       placements.set(player.modelSlug, values);
-      if (player.placement === 1) wins.set(player.modelSlug, (wins.get(player.modelSlug) ?? 0) + 1);
+      if (placement === 1) wins.set(player.modelSlug, (wins.get(player.modelSlug) ?? 0) + 1);
     }
-    if (player.totalScore !== null) {
+    if (totalScore !== null) {
       const values = points.get(player.modelSlug) ?? [];
-      values.push(player.totalScore);
+      values.push(totalScore);
       points.set(player.modelSlug, values);
     }
   }

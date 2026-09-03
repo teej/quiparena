@@ -27,6 +27,7 @@ export function createEmptyLiveState(): LiveState {
     matchups: [],
     thriplash: null,
     finalScores: null,
+    observedPlacements: null,
     traces: {},
     error: null,
   };
@@ -259,12 +260,37 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
     }
     case "thriplash.resolved":
       return { ...state, thriplash: event.thriplash, phase: "playing" };
+    case "standings.observed": {
+      const playerByName = new Map(Object.values(state.players).map((player) => [
+        player.player.name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US"),
+        player.player.id,
+      ]));
+      const observedScores: Record<string, number> = {};
+      const observedPlacements: Record<string, number> = {};
+      for (const standing of event.standings) {
+        const playerId = playerByName.get(
+          standing.name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US"),
+        );
+        if (!playerId) continue;
+        observedScores[playerId] = standing.score;
+        observedPlacements[playerId] = standing.placement;
+      }
+      return {
+        ...state,
+        finalScores: Object.keys(observedScores).length > 0
+          ? { ...(state.finalScores ?? {}), ...observedScores }
+          : state.finalScores,
+        observedPlacements: Object.keys(observedPlacements).length > 0
+          ? observedPlacements
+          : state.observedPlacements,
+      };
+    }
     case "game.ended":
       return {
         ...state,
         endedAt: event.at,
         phase: "ended",
-        finalScores: event.finalScores ?? state.finalScores,
+        finalScores: state.observedPlacements ? state.finalScores : event.finalScores ?? state.finalScores,
         players: Object.fromEntries(
           Object.entries(state.players).map(([id, player]) => [id, { ...player, activity: "done" as const }]),
         ),
@@ -274,6 +300,10 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
       return { ...state, error: event.message };
     case "answer.rejected":
       // The harness re-asks the player; the eventual answer.submitted updates the card.
+      return state;
+    case "matchup.observed":
+    case "scoreboard.observed":
+    case "audience.votes":
       return state;
   }
 }
@@ -296,5 +326,6 @@ export function liveStateToGame(state: LiveState): Game | null {
     ...(state.endedAt ? { endedAt: state.endedAt } : {}),
     ...(state.thriplash ? { thriplash: state.thriplash } : {}),
     ...(state.finalScores ? { finalScores: state.finalScores } : {}),
+    ...(state.observedPlacements ? { observedPlacements: state.observedPlacements } : {}),
   };
 }
