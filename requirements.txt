@@ -1,2 +1,7 @@
 fastapi==0.100.0
 hypercorn==0.14.4
+selenium==4.34.2
+click==8.2.1
+openai==1.98.0
+pathos==0.3.4
+requests==2.32.4
