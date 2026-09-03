@@ -139,5 +139,6 @@ describe.skipIf(!process.env["OPENROUTER_API_KEY"])("host-agent --image integrat
     expect(result).toMatchObject({ code: "BEXH", confirmed: true, screenState: "lobby" });
     await expect(readFile(roomFile, "utf8")).resolves.toBe("BEXH\n");
     await expect(readFile(statusFilePath(roomFile), "utf8")).resolves.toContain('"code": "BEXH"');
+    await expect(readFile(statusFilePath(roomFile), "utf8")).resolves.toContain('"confirmed": true');
   }, 30_000);
 });

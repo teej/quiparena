@@ -132,6 +132,7 @@ export const votes = pgTable("votes", {
   source: voteSource("source").notNull(),
   choice: integer("choice").notNull(),
   weight: numeric("weight", { mode: "number" }).notNull().default(1),
+  inferred: boolean("inferred").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
 }, (table) => [
   check(

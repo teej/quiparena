@@ -45,7 +45,7 @@ b, strong { font-weight: 700; }
 /* micro-label: the one move that shows up in every project */
 .label, .rule-label, .sep, .site__nav, .site__tv, .site__footer, .live__bar, .pane__head, .pane__status,
 .matchup__kicker, .option__letter, .option__meta, .option__tally, .segmented, th, .mono, .num, .board__id,
-.tv__status, .tv__room, .standings__rank, .standings__note, .replay__number, .trace summary, .note, .back {
+.tv__status, .tv__room, .standings__rank, .standings__note, .replay__number, .trace summary, .trace__timing, .option__timing, .note, .back {
   font-family: var(--mono);
 }
 .label, .rule-label, .site__nav a, .site__tv, .live__bar, .pane__status, .matchup__kicker, .option__meta,
@@ -170,9 +170,15 @@ td.num { font-family: var(--mono); }
 tr:hover td { background: rgb(242 238 231 / 2%); }
 .games__date a { color: var(--ink); }
 .live-tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.abandoned-tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--warn); }
+tr[data-status="abandoned"] td { color: var(--dim); }
 .board__id { display: block; font-size: 11px; color: var(--dim); font-family: var(--mono); }
-.board__rating { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.board__plus-minus { color: var(--dim); font-weight: 400; }
+.board__rating { color: var(--ink); white-space: nowrap; }
+.board__rating-grid { display: inline-grid; grid-template-columns: 4ch 4ch; column-gap: 0.75ch; align-items: baseline; }
+.board__rating-head { font-size: 14px; }
+.board__rating-head span { grid-column: 1 / -1; font-size: 11px; text-align: center; }
+.board__rating-value { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.board__plus-minus { text-align: left; color: var(--dim); font-weight: 400; font-variant-numeric: tabular-nums; }
 
 .segmented { display: flex; align-items: center; gap: 0; }
 .segmented__label { margin-right: 12px; }
@@ -200,6 +206,10 @@ section.option--replay { padding: 10px 12px; }
 .option--replay .option__tally[data-trace="true"]::before { content: "▸ "; font-size: 11px; font-weight: 400; color: var(--dim); vertical-align: 4px; }
 .option--replay[open] .option__tally[data-trace="true"]::before { content: "▾ "; }
 .option--replay .option__votes { white-space: normal; }
+.option__timing, .trace__timing { color: var(--dim); font-size: 10px; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.option__timing { white-space: nowrap; }
+.trace__timing { margin-left: 10px; }
+.trace--none .trace__timing { margin: 0 0 3px; }
 .option__trace { margin: 0 12px 12px; padding-top: 10px; border-top: 1px dashed var(--line); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 .trace { color: var(--muted); }
 .trace summary { cursor: pointer; list-style: none; }

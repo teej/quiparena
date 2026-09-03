@@ -76,6 +76,14 @@ export function createApp(options: AppOptions): Hono {
     return context.json(await options.store.leaderboard(population));
   });
 
+  app.get("/api/frontier", async (context) => {
+    const requested = context.req.query("population") ?? "player";
+    const population: LeaderboardPopulation = requested === "audience" || requested === "blended"
+      ? requested
+      : "player";
+    return context.json(await options.store.frontier(population));
+  });
+
   app.post("/api/admin/ratings/recompute", async (context) => {
     const token = bearerToken(context.req.header("Authorization")) ?? context.req.query("token") ?? null;
     if (!equalTokens(token, options.ingestToken)) {

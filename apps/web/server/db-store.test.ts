@@ -1,5 +1,5 @@
 import type { ArenaDatabase } from "@quiparena/arena";
-import { openDb } from "@quiparena/arena";
+import { abandonGame, games, openDb } from "@quiparena/arena";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
@@ -78,14 +78,30 @@ describe("DbStore web integration", () => {
     });
     expect(archive).toEqual(fixture.archive);
 
+    const observedWinner = [...fixture.archive.game.players]
+      .sort((left, right) => (fixture.archive.game.finalScores?.[left.id] ?? 0)
+        - (fixture.archive.game.finalScores?.[right.id] ?? 0))[0]!;
+    await db.update(games).set({ observedScores: [{ name: observedWinner.name, score: 999_999 }] });
+    await abandonGame(db, nextGame.gameId);
+
     const gamesResponse = await fetch(`${baseUrl}/api/games`);
     expect(gamesResponse.status).toBe(200);
     const summaries = await gamesResponse.json() as GameSummary[];
     expect(summaries.find((game) => game.id === fixture.archive.game.id)).toMatchObject({
       id: fixture.archive.game.id,
+      roomCode: fixture.archive.game.roomCode,
+      status: "completed",
+      winner: observedWinner,
       playerCount: fixture.archive.game.players.length,
       matchupCount: fixture.archive.game.matchups.length,
     });
+    expect(summaries.find((game) => game.id === nextGame.gameId)).toMatchObject({
+      roomCode: "NEXT",
+      status: "abandoned",
+    });
+    const observedArchive = await fetch(`${baseUrl}/api/games/${fixture.archive.game.id}`)
+      .then((response) => response.json()) as ArchivedGame;
+    expect(observedArchive.game.observedScores?.[observedWinner.id]).toBe(999_999);
 
     const board = await waitFor<LeaderboardResponse>(async () => {
       const response = await fetch(`${baseUrl}/api/leaderboard?population=player`);
@@ -110,5 +126,64 @@ describe("DbStore web integration", () => {
 
     socket.close();
     await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  });
+
+  it("rehydrates the most recent running game and its trace metadata on startup", async () => {
+    db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    dbStore = new DbStore(db);
+    const at = "2026-09-02T22:00:00.000Z";
+    await dbStore.saveEvent({ type: "game.created", gameId: "running-game", roomCode: "LIVE", at });
+    await dbStore.saveEvent({
+      type: "player.joined",
+      gameId: "running-game",
+      player: { id: "p1", name: "Model One", modelId: "test/model-one" },
+      at,
+    });
+    await dbStore.saveEvent({ type: "game.started", gameId: "running-game", at });
+    await dbStore.saveEvent({ type: "round.started", gameId: "running-game", round: 1, at });
+    await dbStore.saveEvent({
+      type: "prompt.dealt",
+      gameId: "running-game",
+      round: 1,
+      playerId: "p1",
+      prompt: "Still here?",
+      deadlineMs: Date.parse(at) + 30_000,
+      at,
+    }, {
+      p1: [{
+        playerId: "p1",
+        prompt: "Earlier prompt",
+        reasoning: "A retained thought",
+        answer: "Yes",
+        usage: { inputTokens: 10, outputTokens: 8, reasoningTokens: 4, totalMs: 2_300, firstTokenMs: 410 },
+        attempts: [{
+          kind: "primary",
+          ms: 2_300,
+          firstTokenMs: 410,
+          reasoningTokens: 4,
+          aborted: false,
+        }],
+        at,
+      }],
+    });
+    await dbStore.close();
+    dbStore = new DbStore(db);
+    service = createQuipArenaServer({ ingestToken: "db-test-token", store: dbStore });
+    await service.start(0);
+
+    expect(service.live.state).toMatchObject({
+      gameId: "running-game",
+      roomCode: "LIVE",
+      round: 1,
+      phase: "playing",
+      playerOrder: ["p1"],
+      traces: {
+        p1: [expect.objectContaining({
+          prompt: "Earlier prompt",
+          usage: expect.objectContaining({ totalMs: 2_300, firstTokenMs: 410 }),
+          attempts: [expect.objectContaining({ kind: "primary" })],
+        })],
+      },
+    });
   });
 });

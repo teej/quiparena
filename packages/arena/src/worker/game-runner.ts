@@ -54,8 +54,8 @@ class GameAccumulator {
   startedAt?: string;
   endedAt?: string;
   finalScores?: Record<string, number>;
+  observedScores?: Record<string, number>;
   observedPlacements?: Record<string, number>;
-  #hasObservedStandings = false;
 
   constructor(readonly gameId: string, readonly roomCode: string) {}
 
@@ -91,15 +91,14 @@ class GameAccumulator {
           return playerId ? [[playerId, standing.placement]] : [];
         }));
         if (Object.keys(observed).length > 0) {
-          this.finalScores = observed;
+          this.observedScores = observed;
           this.observedPlacements = placements;
-          this.#hasObservedStandings = true;
         }
         break;
       }
       case "game.ended":
         this.endedAt = event.at;
-        if (!this.#hasObservedStandings && event.finalScores) this.finalScores = event.finalScores;
+        if (event.finalScores) this.finalScores = event.finalScores;
         break;
       default:
         break;
@@ -118,6 +117,7 @@ class GameAccumulator {
       )),
       ...(this.thriplash === undefined ? {} : { thriplash: this.thriplash }),
       ...(this.finalScores === undefined ? {} : { finalScores: this.finalScores }),
+      ...(this.observedScores === undefined ? {} : { observedScores: this.observedScores }),
       ...(this.observedPlacements === undefined ? {} : { observedPlacements: this.observedPlacements }),
     };
   }
@@ -228,9 +228,13 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
       emitScored(event);
       return;
     }
-    // The aggregator owns the terminal event so its resolved matchups are
-    // ordered before game.ended. All other per-seat events remain observable.
-    if (event.type !== "game.ended") emitScored(event);
+    // The aggregator owns lifecycle events so eight seat controllers produce
+    // one canonical game/round boundary. Seat-scoped events remain observable.
+    const lifecycle = event.type === "game.created"
+      || event.type === "game.started"
+      || event.type === "round.started"
+      || event.type === "game.ended";
+    if (!lifecycle) emitScored(event);
     harnessAggregator.ingest(event);
   };
   let resolveEnded!: () => void;
@@ -342,6 +346,9 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
     }
 
     await Promise.race([ended, abort.promise, timedOut]);
+    // The VIP emits game.ended immediately before its configured post-game
+    // action. Waiting for the seat boundary guarantees NEW PLAYERS was sent.
+    await Promise.race([vip.waitForGameEnd(), abort.promise, timedOut]);
     if (audienceConnected && audience?.waitForFinalStandings) {
       try {
         await Promise.race([audience.waitForFinalStandings(), abort.promise, timedOut]);

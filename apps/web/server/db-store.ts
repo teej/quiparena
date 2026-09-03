@@ -22,6 +22,8 @@ import type {
 } from "../shared/types.js";
 import { liveStateToGame, replayEvents } from "../shared/reducer.js";
 import type { Store } from "./store.js";
+import type { FrontierResponse } from "../shared/frontier.js";
+import { loadDbFrontier } from "./frontier.js";
 
 export interface DbStoreOptions {
   ratingsDebounceMs?: number;
@@ -71,19 +73,28 @@ export class DbStore implements Store {
       loadRecordedTraces(this.db, id),
     ]);
     if (!game) return null;
-    const replayedGame = liveStateToGame(replayEvents(events)) ?? game;
+    const replayedGame = liveStateToGame(replayEvents(events));
+    const archivedGame = replayedGame === null ? game : {
+      ...replayedGame,
+      ...(replayedGame.finalScores !== undefined || game.finalScores === undefined
+        ? {}
+        : { finalScores: game.finalScores }),
+      ...(game.observedScores === undefined ? {} : { observedScores: game.observedScores }),
+      ...(game.observedPlacements === undefined ? {} : { observedPlacements: game.observedPlacements }),
+    };
 
-    const traces: ArchivedGame["traces"] = {};
-    for (const trace of recordedTraces) {
-      // LiveState retains the newest trace for a player/prompt pair. Applying the
-      // same rule here keeps archive replay identical after intermediate snapshots.
-      const existing = traces[trace.playerId] ?? [];
-      traces[trace.playerId] = [
-        ...existing.filter((item) => item.prompt !== trace.prompt),
-        trace,
-      ];
-    }
-    return { game: replayedGame, events, traces };
+    return { game: archivedGame, events, traces: traceMap(recordedTraces) };
+  }
+
+  /** Rebuild the newest active game's live state after a web process restart. */
+  async loadLiveState(): Promise<LiveState> {
+    const current = (await listRecordedGames(this.db)).find((game) => game.status === "running");
+    if (!current) return replayEvents([]);
+    const [events, traces] = await Promise.all([
+      loadRecordedEvents(this.db, current.id),
+      loadRecordedTraces(this.db, current.id),
+    ]);
+    return { ...replayEvents(events), traces: traceMap(traces) };
   }
 
   async leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse> {
@@ -110,6 +121,10 @@ export class DbStore implements Store {
           };
         });
     return { population, audienceVotingAvailable, entries };
+  }
+
+  frontier(population: LeaderboardPopulation): Promise<FrontierResponse> {
+    return loadDbFrontier(this.db, population);
   }
 
   /** Force a ratings snapshot now. Calls are serialized with background refreshes. */
@@ -143,6 +158,8 @@ export class DbStore implements Store {
         prompt: trace.prompt,
         reasoning: trace.reasoning,
         answer: trace.answer,
+        ...(trace.usage === undefined ? {} : { usage: trace.usage }),
+        ...(trace.attempts === undefined ? {} : { attempts: trace.attempts }),
         at: trace.at,
       };
       await this.recorder.record(event);
@@ -158,4 +175,17 @@ export class DbStore implements Store {
     }, this.ratingsDebounceMs);
     this.ratingsTimer.unref?.();
   }
+}
+
+function traceMap(recordedTraces: Awaited<ReturnType<typeof loadRecordedTraces>>): ArchivedGame["traces"] {
+  const traces: ArchivedGame["traces"] = {};
+  for (const trace of recordedTraces) {
+    // Keep the newest trace for a player/prompt pair, matching LiveState.
+    const existing = traces[trace.playerId] ?? [];
+    traces[trace.playerId] = [
+      ...existing.filter((item) => item.prompt !== trace.prompt),
+      trace,
+    ];
+  }
+  return traces;
 }

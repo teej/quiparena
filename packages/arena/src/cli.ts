@@ -16,7 +16,7 @@ import { captureFinalScores } from "./host-agent/read-scores.js";
 import type { LobbyGameHistory } from "./lobby.js";
 import { ConsoleSink, ModelPlayer, type ModelPlayerConfig } from "./model-player.js";
 import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js";
-import { loadGame } from "./recorder.js";
+import { backfillAudienceVotes, loadGame } from "./recorder.js";
 import { findRosterModel, loadRoster, validateRoster, type ModelRoster } from "./registry.js";
 import type { RosterModel } from "./registry.js";
 import { WorkerEventBus } from "./worker/bus.js";
@@ -33,14 +33,14 @@ function usage(): string {
     "  quiparena vote --model <slug> --prompt <text> --a <answer> --b <answer> [--deadline-s 30]",
     "  quiparena roster",
     "  quiparena db migrate",
-    "  quiparena ratings compute [--bootstrap 200]",
+    "  quiparena ratings compute [--bootstrap 200] [--backfill-audience]",
     "  quiparena ratings show [--population blended]",
     "  quiparena games list [--limit 20]",
     "  quiparena games show <id>",
     "  quiparena games abandon <id>",
     "  quiparena games capture-scores <id> --image PATH [--model slug]",
     "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--record DIR] [--db] [--ingest URL]",
-    "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL]",
+    "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL] [--stop-file PATH] [--max-games N]",
     "  quiparena host-agent --room-file PATH [--interval-s 15] [--once] [--image PATH]",
     "  quiparena dry-run [--players 8]",
     "",
@@ -212,7 +212,10 @@ async function runRatings(args: string[]): Promise<void> {
   if (command === "compute") {
     const { values } = parseArgs({
       args: rest,
-      options: { bootstrap: { type: "string" } },
+      options: {
+        bootstrap: { type: "string" },
+        "backfill-audience": { type: "boolean" },
+      },
       strict: true,
     });
     const bootstrapResamples = values.bootstrap === undefined ? undefined : Number(values.bootstrap);
@@ -221,6 +224,13 @@ async function runRatings(args: string[]): Promise<void> {
       throw new Error("--bootstrap must be a non-negative integer");
     }
     await usingDb(async (db) => {
+      if (values["backfill-audience"]) {
+        const backfill = await backfillAudienceVotes(db);
+        console.log(
+          `Audience backfill examined ${backfill.observedMatchups} observed matchups:`
+          + ` ${backfill.inferredVotes} inferred, ${backfill.countedVotes} counted.`,
+        );
+      }
       const result = await computeRatings(db, {
         ...(bootstrapResamples === undefined ? {} : { bootstrapResamples }),
       });
@@ -351,16 +361,29 @@ function workerRoster(roster: ModelRoster, modelsValue: string | undefined, coun
   return candidates.slice(0, count);
 }
 
-function workerSignal(): { signal: AbortSignal; dispose(): void } {
+function workerSignal(options: { onGracefulStop?: () => void } = {}): {
+  signal: AbortSignal;
+  stopRequested(): boolean;
+  dispose(): void;
+} {
   const controller = new AbortController();
   const abort = (): void => controller.abort();
+  let gracefulStop = false;
+  const armGracefulStop = (): void => {
+    if (gracefulStop) return;
+    gracefulStop = true;
+    options.onGracefulStop?.();
+  };
   process.once("SIGINT", abort);
   process.once("SIGTERM", abort);
+  if (options.onGracefulStop) process.once("SIGUSR1", armGracefulStop);
   return {
     signal: controller.signal,
+    stopRequested: () => gracefulStop,
     dispose: () => {
       process.off("SIGINT", abort);
       process.off("SIGTERM", abort);
+      process.off("SIGUSR1", armGracefulStop);
     },
   };
 }
@@ -461,16 +484,27 @@ async function runWorkerLoop(args: string[]): Promise<void> {
       "room-file": { type: "string" },
       db: { type: "boolean" },
       ingest: { type: "string" },
+      "stop-file": { type: "string" },
+      "max-games": { type: "string" },
     },
     strict: true,
   });
   const roomCode = required(values.room, "--room").toUpperCase();
   if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
   const roster = (await loadRoster()).models;
+  const maxGames = values["max-games"] === undefined ? undefined : Number(values["max-games"]);
+  if (maxGames !== undefined && (!Number.isInteger(maxGames) || maxGames < 1)) {
+    throw new Error("--max-games must be a positive integer");
+  }
   const bus = new WorkerEventBus();
   compactLiveLog(bus);
   const sinks: WorkerSink[] = [];
   let db: ArenaDatabase | undefined;
+  const signal = workerSignal({
+    onGracefulStop: () => {
+      console.warn("[quiparena/worker] graceful stop armed by SIGUSR1; finishing the current game, sending NEW PLAYERS, then exiting");
+    },
+  });
   try {
     if (values.db) {
       db = await openDb();
@@ -480,7 +514,7 @@ async function runWorkerLoop(args: string[]): Promise<void> {
     let seedHistory: LobbyGameHistory[] | undefined;
     if (!db && ingestUrl) {
       try {
-        seedHistory = await loadLobbyHistoryFromApi(ingestUrl);
+        seedHistory = await loadLobbyHistoryFromApi(ingestUrl, globalThis.fetch, signal.signal);
         console.log(`[quiparena/worker] seeded rotation from ${seedHistory.length} completed archive games`);
       } catch (error) {
         console.warn(
@@ -490,22 +524,21 @@ async function runWorkerLoop(args: string[]): Promise<void> {
       }
     }
     sinks.forEach((sink) => bus.addSink(sink));
-    const signal = workerSignal();
-    try {
-      await runLoop({
-        roomCode,
-        roster,
-        bus,
-        credentialsFile: DEFAULT_WORKER_CREDENTIALS,
-        signal: signal.signal,
-        ...(values["room-file"] === undefined ? {} : { roomFile: resolveOptionPath(values["room-file"]) }),
-        ...(db === undefined ? {} : { db }),
-        ...(seedHistory === undefined ? {} : { seedHistory }),
-      });
-    } finally {
-      signal.dispose();
-    }
+    await runLoop({
+      roomCode,
+      roster,
+      bus,
+      credentialsFile: DEFAULT_WORKER_CREDENTIALS,
+      signal: signal.signal,
+      stopRequested: signal.stopRequested,
+      ...(values["room-file"] === undefined ? {} : { roomFile: resolveOptionPath(values["room-file"]) }),
+      ...(values["stop-file"] === undefined ? {} : { stopFile: resolveOptionPath(values["stop-file"]) }),
+      ...(maxGames === undefined ? {} : { maxGames }),
+      ...(db === undefined ? {} : { db }),
+      ...(seedHistory === undefined ? {} : { seedHistory }),
+    });
   } finally {
+    signal.dispose();
     await closeSinks(bus, sinks, db);
   }
 }

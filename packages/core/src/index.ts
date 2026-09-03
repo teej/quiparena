@@ -73,8 +73,10 @@ export interface Game {
   players: PlayerRef[];
   matchups: Matchup[];
   thriplash?: Thriplash;
-  /** Final standings if observed: playerId -> total score. */
+  /** Arena-computed final score by player id. */
   finalScores?: Record<string, number>;
+  /** Scores read from the game's own final standings, kept beside arena-computed scores. */
+  observedScores?: Record<string, number>;
   /** Audience-narrated final placement by player id, when available. */
   observedPlacements?: Record<string, number>;
 }

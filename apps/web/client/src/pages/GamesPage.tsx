@@ -22,10 +22,16 @@ export function GamesPage() {
           </thead>
           <tbody>
             {games.map((game) => (
-              <tr key={game.id}>
+              <tr key={game.id} data-status={game.status}>
                 <td className="games__date"><Link to={`/games/${game.id}`}>{formatDate(game.startedAt)}</Link></td>
                 <td className="mono">{game.roomCode}</td>
-                <td>{game.winner ? <strong>{game.winner.name}</strong> : game.endedAt ? <span className="dim">no scores</span> : <span className="live-tag">live</span>}</td>
+                <td>{game.status === "abandoned"
+                  ? <span className="abandoned-tag">abandoned</span>
+                  : game.status === "running"
+                    ? <span className="live-tag">live</span>
+                    : game.winner
+                      ? <strong>{game.winner.name}</strong>
+                      : <span className="dim">no scores</span>}</td>
                 <td className="num">{game.matchupCount}</td>
                 <td className="num">{game.topScore === null ? "–" : formatScore(game.topScore)}</td>
               </tr>

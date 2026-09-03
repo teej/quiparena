@@ -1,4 +1,4 @@
-import type { GameEvent, PlayerRef } from "@quiparena/core";
+import type { GameEvent, PlayerRef, StreamEvent } from "@quiparena/core";
 import { asc, count, desc, eq } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./client.js";
@@ -9,6 +9,7 @@ export interface RecordedGameSummary {
   roomCode: string;
   startedAt: string;
   endedAt: string | null;
+  status: "running" | "completed" | "abandoned";
   playerCount: number;
   matchupCount: number;
   winner: PlayerRef | null;
@@ -20,7 +21,16 @@ export interface RecordedTrace {
   prompt: string;
   reasoning: string;
   answer: string;
+  usage?: Extract<StreamEvent, { type: "trace.completed" }>["usage"];
+  attempts?: Extract<StreamEvent, { type: "trace.completed" }>["attempts"];
   at: string;
+}
+
+function publicStatus(status: "created" | "running" | "completed" | "failed" | "abandoned"):
+  RecordedGameSummary["status"] {
+  if (status === "completed") return "completed";
+  if (status === "created" || status === "running") return "running";
+  return "abandoned";
 }
 
 /** Return archive summaries newest-first without reconstructing every full game. */
@@ -66,6 +76,7 @@ export async function listRecordedGames(db: ArenaDatabaseClient): Promise<Record
       roomCode: game.roomCode,
       startedAt: game.startedAt.toISOString(),
       endedAt: game.endedAt?.toISOString() ?? null,
+      status: publicStatus(game.status),
       playerCount: players.length,
       matchupCount: matchupCounts.get(game.id) ?? 0,
       winner: top ? (players.find((player) => player.id === top[0]) ?? null) : null,
@@ -96,18 +107,28 @@ export async function loadRecordedTraces(
     prompt: traces.prompt,
     reasoning: traces.reasoning,
     answer: traces.answer,
+    usage: traces.usage,
     createdAt: traces.createdAt,
     id: traces.id,
   }).from(traces)
     .where(eq(traces.gameId, gameId))
     .orderBy(asc(traces.createdAt), asc(traces.id));
-  return rows.map((row) => ({
-    playerId: row.playerId,
-    prompt: row.prompt,
-    reasoning: row.reasoning,
-    answer: row.answer,
-    at: row.createdAt.toISOString(),
-  }));
+  return rows.map((row) => {
+    const stored = row.usage ?? {};
+    const attempts = Array.isArray(stored["attempts"])
+      ? stored["attempts"] as NonNullable<RecordedTrace["attempts"]>
+      : undefined;
+    const { attempts: _attempts, ...usage } = stored;
+    return {
+      playerId: row.playerId,
+      prompt: row.prompt,
+      reasoning: row.reasoning,
+      answer: row.answer,
+      ...(Object.keys(usage).length === 0 ? {} : { usage: usage as NonNullable<RecordedTrace["usage"]> }),
+      ...(attempts === undefined ? {} : { attempts }),
+      at: row.createdAt.toISOString(),
+    };
+  });
 }
 
 /** Whether any audience vote has been recorded. */

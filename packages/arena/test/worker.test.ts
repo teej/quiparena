@@ -1,4 +1,8 @@
-import type { Game, StreamEvent } from "@quiparena/core";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { AnyEvent, Game, StreamEvent } from "@quiparena/core";
 import { ScriptedPlayer, type Player } from "@quiparena/jackbox";
 import { count } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
@@ -11,7 +15,7 @@ import { WorkerEventBus } from "../src/worker/bus.js";
 import { FakeHarness } from "../src/worker/fake-harness.js";
 import { runGame, type RunGameOptions } from "../src/worker/game-runner.js";
 import { loadLobbyHistoryFromApi, runLoop } from "../src/worker/loop.js";
-import type { CreateAudienceObserverOptions } from "../src/worker/seat.js";
+import type { CreateAudienceObserverOptions, GameClient } from "../src/worker/seat.js";
 import { DbSink } from "../src/worker/sinks.js";
 
 function roster(count: number): RosterModel[] {
@@ -114,8 +118,44 @@ describe("arena worker", () => {
     });
     expect(harness.connected).toBe(true);
     expect(harness.closed).toBe(true);
-    expect(game.finalScores).toEqual({ "2": 500, "3": 999, "4": 0 });
+    expect(game.observedScores).toEqual({ "2": 500, "3": 999, "4": 0 });
     expect(game.observedPlacements).toEqual({ "2": 2, "3": 1, "4": 3 });
+  });
+
+  it("publishes one lifecycle stream while preserving seat-scoped player ids", async () => {
+    const source = new FakeHarness({ playerCount: 4 });
+    const duplicated: GameClient = {
+      lookupRoom: (roomCode) => source.lookupRoom(roomCode),
+      createSeat: (options) => source.createSeat({
+        ...options,
+        onEvent: (event) => {
+          if (event.type === "matchup.resolved" || event.type === "thriplash.resolved") return;
+          const lifecycle = event.type === "game.created"
+            || event.type === "game.started"
+            || event.type === "round.started"
+            || event.type === "game.ended";
+          for (let copy = 0; copy < (lifecycle ? 4 : 1); copy += 1) options.onEvent(event);
+        },
+      }),
+    };
+    const bus = new WorkerEventBus();
+    const emitted: AnyEvent[] = [];
+    bus.on((event) => emitted.push(event));
+    await runGame({
+      roomCode: "FAKE",
+      roster: roster(4),
+      bus,
+      gameClient: duplicated,
+      playerFactory: scripted,
+      timeoutMs: 10_000,
+    });
+
+    expect(emitted.filter((event) => event.type === "game.created")).toHaveLength(1);
+    expect(emitted.filter((event) => event.type === "game.started")).toHaveLength(1);
+    expect(emitted.filter((event) => event.type === "round.started")).toHaveLength(3);
+    expect(emitted.filter((event) => event.type === "game.ended")).toHaveLength(1);
+    expect(new Set(emitted.filter((event) => event.type === "prompt.dealt").map((event) => event.playerId)))
+      .toEqual(new Set(["2", "3", "4", "5"]));
   });
 
   it("stops after a completed game exceeds the daily spend cap", async () => {
@@ -181,6 +221,45 @@ describe("arena worker", () => {
     expect(seen).toHaveLength(2);
     expect(seen[1]?.slice(0, 2)).toEqual(seen[0]?.slice(0, 2));
     expect(seen[1]?.slice(2)).not.toEqual(expect.arrayContaining(seen[0]?.slice(2) ?? []));
+  });
+
+  it("honors a graceful stop request after the current game", async () => {
+    let stopRequested = false;
+    const result = await runLoop({
+      roomCode: "FAKE",
+      roster: roster(4),
+      players: 4,
+      keep: 2,
+      gameClient: new FakeHarness({ playerCount: 4 }),
+      playerFactory: scripted,
+      stopRequested: () => stopRequested,
+      logger: quiet,
+      onGame: () => { stopRequested = true; },
+    });
+    expect(result.reason).toBe("graceful-stop");
+    expect(result.games).toHaveLength(1);
+  });
+
+  it("polls a stop file at the game boundary", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "quiparena-loop-stop-"));
+    const stopFile = join(directory, "loop.stop");
+    try {
+      const result = await runLoop({
+        roomCode: "FAKE",
+        roster: roster(4),
+        players: 4,
+        keep: 2,
+        gameClient: new FakeHarness({ playerCount: 4 }),
+        playerFactory: scripted,
+        stopFile,
+        logger: quiet,
+        onGame: async () => { await writeFile(stopFile, "stop\n"); },
+      });
+      expect(result.reason).toBe("graceful-stop");
+      expect(result.games).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("benches a model after failures in consecutive appearances", async () => {

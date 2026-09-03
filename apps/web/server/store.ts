@@ -10,6 +10,8 @@ import type {
   LiveState,
 } from "../shared/types.js";
 import { createDemoFixture } from "./demo.js";
+import type { FrontierResponse } from "../shared/frontier.js";
+import { inMemoryFrontier } from "./frontier.js";
 
 /**
  * Persistence boundary for the web process. The arena worker never writes the
@@ -23,6 +25,8 @@ export interface Store {
   listGames(): Promise<GameSummary[]>;
   getGame(id: string): Promise<ArchivedGame | null>;
   leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse>;
+  frontier(population: LeaderboardPopulation): Promise<FrontierResponse>;
+  loadLiveState?(): Promise<LiveState>;
 }
 
 interface StoredRecord {
@@ -88,10 +92,23 @@ export class InMemoryStore implements Store {
       entries: calculateLeaderboard(games.flatMap((game) => game.players), games, population),
     };
   }
+
+  async frontier(population: LeaderboardPopulation): Promise<FrontierResponse> {
+    const board = await this.leaderboard(population);
+    const records = [...this.records.values()];
+    const games = records.map((record) => liveStateToGame(record.state));
+    const kept = games.flatMap((game, index) => (game ? [{ game, traces: records[index]?.traces ?? {} }] : []));
+    return {
+      population,
+      audienceVotingAvailable: board.audienceVotingAvailable,
+      entries: inMemoryFrontier(population, board.entries, kept.map((item) => item.game), kept.map((item) => item.traces)),
+    };
+  }
 }
 
 function toSummary(game: NonNullable<ReturnType<typeof liveStateToGame>>): GameSummary {
-  const scores = Object.entries(game.finalScores ?? {}).sort((left, right) => right[1] - left[1]);
+  const scores = Object.entries(game.observedScores ?? game.finalScores ?? {})
+    .sort((left, right) => right[1] - left[1]);
   const [top] = scores;
   const winner = top ? (game.players.find((player) => player.id === top[0]) ?? null) : null;
   return {
@@ -99,6 +116,7 @@ function toSummary(game: NonNullable<ReturnType<typeof liveStateToGame>>): GameS
     roomCode: game.roomCode,
     startedAt: game.startedAt,
     endedAt: game.endedAt ?? null,
+    status: game.endedAt ? "completed" : "running",
     playerCount: game.players.length,
     matchupCount: game.matchups.length,
     winner,
@@ -126,7 +144,12 @@ function voteWeight(vote: Vote): number {
 
 function calculateLeaderboard(
   allPlayers: PlayerRef[],
-  games: Array<{ players: PlayerRef[]; matchups: Matchup[]; finalScores?: Record<string, number> }>,
+  games: Array<{
+    players: PlayerRef[];
+    matchups: Matchup[];
+    finalScores?: Record<string, number>;
+    observedScores?: Record<string, number>;
+  }>,
   population: LeaderboardPopulation,
 ): LeaderboardEntry[] {
   const ratings = new Map<string, MutableRating>();
@@ -136,13 +159,14 @@ function calculateLeaderboard(
   }
 
   for (const game of games) {
-    const topScore = Math.max(...Object.values(game.finalScores ?? {}), Number.NEGATIVE_INFINITY);
+    const rankingScores = game.observedScores ?? game.finalScores ?? {};
+    const topScore = Math.max(...Object.values(rankingScores), Number.NEGATIVE_INFINITY);
     for (const player of game.players) {
       if (!player.modelId) continue;
       const rating = ratings.get(player.modelId);
       if (!rating) continue;
       rating.games += 1;
-      if (game.finalScores?.[player.id] === topScore) rating.wins += 1;
+      if (rankingScores[player.id] === topScore) rating.wins += 1;
     }
 
     for (const matchup of game.matchups) {

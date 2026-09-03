@@ -38,7 +38,7 @@ export function LeaderboardPage() {
       {entries.length > 0 && (
         <table className="board">
           <thead>
-            <tr><th className="num">#</th><th>model</th><th className="num">rating</th><th className="num">games</th><th className="num">wins</th><th className="num">matchups</th></tr>
+            <tr><th className="num">#</th><th>model</th><th className="num"><span className="board__rating-grid board__rating-head"><span>rating</span></span></th><th className="num">games</th><th className="num">wins</th><th className="num">matchups</th></tr>
           </thead>
           <tbody>
             {entries.map((entry, index) => {
@@ -51,7 +51,10 @@ export function LeaderboardPage() {
                   <td className="num dim">{index + 1}</td>
                   <td><strong>{entry.name}</strong><span className="board__id">{entry.modelId}</span></td>
                   <td className="num board__rating" title={`95% bootstrap interval: ${entry.intervalLow}–${entry.intervalHigh}`}>
-                    {entry.rating} <span className="board__plus-minus">±{plusMinus}</span>
+                    <span className="board__rating-grid">
+                      <span className="board__rating-value">{entry.rating}</span>
+                      <span className="board__plus-minus">±{plusMinus}</span>
+                    </span>
                   </td>
                   <td className="num">{entry.games}</td>
                   <td className="num">{entry.wins}</td>

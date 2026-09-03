@@ -129,7 +129,13 @@ export function createDemoFixture(seed = 20260902): DemoFixture {
         prompt: definition.prompt,
         reasoning,
         answer,
-        usage: { inputTokens: 84, outputTokens: 31, reasoningTokens: 18 },
+        usage: {
+          inputTokens: 84,
+          outputTokens: 31,
+          reasoningTokens: 18 + authorIndex * 7,
+          costUsd: 0.0004 * (1 + ((authorIndex * 5) % 8)),
+          totalMs: 2_800 + authorIndex * 350,
+        },
         at: at(),
       });
       push({

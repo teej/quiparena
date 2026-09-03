@@ -66,6 +66,9 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
   readonly #normal = new Map<string, NormalAccumulator>();
   readonly #nextMatchupIndex: Record<1 | 2, number> = { 1: 0, 2: 0 };
   #thriplash?: ThriplashAccumulator;
+  #created = false;
+  #started = false;
+  readonly #rounds = new Set<number>();
   #ended = false;
 
   constructor(options: GameAggregatorOptions) {
@@ -80,9 +83,27 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
     const emitted: GameEvent[] = [];
 
     switch (event.type) {
+      case "game.created":
+        if (!this.#created) {
+          this.#created = true;
+          this.#push(event, emitted);
+        }
+        break;
       case "player.joined":
         if (!this.#players.has(event.player.id)) this.#playerOrder.push(event.player.id);
         this.#players.set(event.player.id, event.player);
+        break;
+      case "game.started":
+        if (!this.#started) {
+          this.#started = true;
+          this.#push(event, emitted);
+        }
+        break;
+      case "round.started":
+        if (!this.#rounds.has(event.round)) {
+          this.#rounds.add(event.round);
+          this.#push(event, emitted);
+        }
         break;
       case "answer.submitted":
         if (event.round === 3 && Array.isArray(event.answer)) {

@@ -10,6 +10,7 @@ export const DEFAULT_HOST_AGENT_INTERVAL_S = 15;
 
 export interface HostAgentStatus {
   code: string | null;
+  confirmed: boolean;
   screenState: ScreenState;
   updatedAt: string;
   lastError: string | null;
@@ -96,6 +97,7 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 function statusFrom(result: HostAgentIterationResult): HostAgentStatus {
   return {
     code: result.code,
+    confirmed: result.confirmed,
     screenState: result.screenState,
     updatedAt: result.updatedAt,
     lastError: result.lastError,

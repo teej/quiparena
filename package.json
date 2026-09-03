@@ -10,7 +10,8 @@
     "start:web": "pnpm --filter @quiparena/web start",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "ops": "bash scripts/ops.sh"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

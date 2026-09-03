@@ -6,6 +6,31 @@ import { GameAggregator } from "../src/aggregator.js";
 const at = "2026-09-02T20:00:00.000Z";
 
 describe("GameAggregator", () => {
+  it("emits seat-repeated lifecycle events only once", () => {
+    const emitted: GameEvent[] = [];
+    const aggregator = new GameAggregator({
+      gameId: "game-4",
+      expectedPlayerCount: 4,
+      onEvent: (event) => emitted.push(event),
+    });
+    const lifecycle: GameEvent[] = [
+      { type: "game.created", gameId: "game-4", roomCode: "LIFE", at },
+      { type: "game.started", gameId: "game-4", at },
+      { type: "round.started", gameId: "game-4", round: 1, at },
+      { type: "round.started", gameId: "game-4", round: 2, at },
+      { type: "round.started", gameId: "game-4", round: 3, at },
+      { type: "game.ended", gameId: "game-4", at },
+    ];
+    for (const event of lifecycle) {
+      for (let seat = 0; seat < 8; seat += 1) add(aggregator, event);
+    }
+
+    expect(emitted.filter((event) => event.type === "game.created")).toHaveLength(1);
+    expect(emitted.filter((event) => event.type === "game.started")).toHaveLength(1);
+    expect(emitted.filter((event) => event.type === "round.started")).toHaveLength(3);
+    expect(emitted.filter((event) => event.type === "game.ended")).toHaveLength(1);
+  });
+
   it("matches vote prompts without their suffix and uppercased choices to canonical answers", () => {
     const emitted: GameEvent[] = [];
     const aggregator = new GameAggregator({

@@ -6,6 +6,7 @@ import type {
   RoundNumber,
   Thriplash,
   VotePopulation,
+  StreamEvent,
 } from "@quiparena/core";
 
 export type PlayerActivity =
@@ -41,6 +42,8 @@ export interface AnswerTrace {
   prompt: string;
   reasoning: string;
   answer: string;
+  usage?: Extract<StreamEvent, { type: "trace.completed" }>["usage"];
+  attempts?: Extract<StreamEvent, { type: "trace.completed" }>["attempts"];
   at: string;
 }
 
@@ -68,6 +71,7 @@ export interface LiveState {
   matchups: Matchup[];
   thriplash: Thriplash | null;
   finalScores: Record<string, number> | null;
+  observedScores: Record<string, number> | null;
   observedPlacements: Record<string, number> | null;
   traces: Record<string, AnswerTrace[]>;
   error: string | null;
@@ -78,6 +82,7 @@ export interface GameSummary {
   roomCode: string;
   startedAt: string;
   endedAt: string | null;
+  status: "running" | "completed" | "abandoned";
   playerCount: number;
   matchupCount: number;
   winner: PlayerRef | null;

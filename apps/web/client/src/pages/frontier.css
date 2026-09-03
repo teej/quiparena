@@ -1,0 +1,46 @@
+/* frontier: rating vs. cost per winning joke. hairlines, one accent, mono ticks. */
+
+.frontier__chart { position: relative; width: 100%; }
+.frontier__svg { display: block; width: 100%; height: auto; overflow: visible; }
+.frontier__grid line { stroke: var(--line-soft); stroke-width: 1; shape-rendering: crispEdges; }
+.frontier__axis line { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+.frontier__ticks text, .frontier__axis-label, .frontier__label {
+  font-family: var(--mono); font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums;
+}
+.frontier__tick--minor { fill: var(--dim); }
+.frontier__axis-label { letter-spacing: 0.08em; text-transform: uppercase; fill: var(--dim); }
+.frontier__path { fill: none; stroke: var(--accent); stroke-width: 1; opacity: 0.8; shape-rendering: crispEdges; }
+.frontier__label { pointer-events: none; paint-order: stroke; stroke: var(--night); stroke-width: 4px; stroke-linejoin: round; }
+.frontier__leader { stroke: var(--dim); stroke-width: 1; }
+.frontier__label--frontier { fill: var(--ink); }
+.frontier__mark { cursor: pointer; outline: 0; }
+.frontier__hit { fill: transparent; }
+.frontier__dot { fill: var(--dim); stroke: var(--night); stroke-width: 2; transition: fill var(--ease), stroke var(--ease); }
+.frontier__mark--frontier .frontier__dot { fill: var(--accent); }
+.frontier__mark:hover .frontier__dot, .frontier__mark--active .frontier__dot, .frontier__mark:focus-visible .frontier__dot { stroke: var(--ink); }
+.frontier__mark:focus-visible { box-shadow: none; }
+
+.frontier__tip {
+  position: absolute; z-index: 2; pointer-events: none; min-width: 200px;
+  padding: 8px 10px 9px; background: var(--night); border: 1px solid var(--line-strong);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--ink);
+}
+.frontier__tip-head { display: grid; gap: 0; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.frontier__tip-head span { color: var(--dim); }
+.frontier__tip dl { margin: 0; display: grid; gap: 1px; }
+.frontier__tip dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.frontier__tip dt { color: var(--muted); }
+.frontier__tip dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.frontier__note { margin-top: -16px; }
+
+.frontier-table th button { font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; white-space: nowrap; }
+.frontier-table th button:hover, .frontier-table th button[data-active="true"] { color: var(--ink); }
+.frontier-table th.num button { text-align: right; }
+.frontier__flag { display: inline-block; width: 6px; height: 6px; margin-right: 7px; vertical-align: 1px; background: var(--accent); }
+.frontier-table td { white-space: nowrap; }
+.frontier-table td:first-child { white-space: normal; }
+
+@media (max-width: 720px) {
+  .frontier-table th:nth-child(n+8), .frontier-table td:nth-child(n+8) { display: none; }
+}

@@ -45,6 +45,25 @@ interface PendingObservedMatchup {
   audienceVotes?: AudienceVotesEvent;
 }
 
+interface ObservedTarget {
+  matchupId: string | null;
+  thriplashId: string | null;
+  /** Map audience presentation order to normalized answer indexes. */
+  choices: [number, number];
+}
+
+export interface InferredAudienceVote {
+  choice: 0 | 1;
+  weight: number;
+  totalVotes: number;
+}
+
+export interface AudienceBackfillResult {
+  observedMatchups: number;
+  inferredVotes: number;
+  countedVotes: number;
+}
+
 export interface RecorderLogger {
   warn(message: string): void;
 }
@@ -56,6 +75,8 @@ export interface RecorderOptions {
 const DEFAULT_RECORDER_LOGGER: RecorderLogger = {
   warn: (message) => console.warn(message),
 };
+
+const MAX_INFERRED_AUDIENCE_UNITS = 100;
 
 function eventDate(at: string): Date {
   const date = new Date(at);
@@ -76,6 +97,74 @@ function canonical(value: unknown): string {
 
 function stableId(prefix: string, value: unknown): string {
   return `${prefix}_${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
+
+function decimalPlaces(value: number): number {
+  const text = String(value).toLocaleLowerCase("en-US");
+  if (text.includes("e-")) {
+    const [coefficient, exponentText] = text.split("e-");
+    return (coefficient?.split(".")[1]?.length ?? 0) + Number(exponentText ?? 0);
+  }
+  return text.split(".")[1]?.length ?? 0;
+}
+
+function roundedPercentageMatches(count: number, total: number, observed: number): boolean {
+  const places = decimalPlaces(observed);
+  const scale = 10 ** places;
+  const rounded = Math.round((100 * count / total + Number.EPSILON) * scale) / scale;
+  return Math.abs(rounded - observed) < 1e-9;
+}
+
+function percentagesMatch(
+  counts: readonly [number, number],
+  total: number,
+  observed: readonly [number, number],
+): boolean {
+  return roundedPercentageMatches(counts[0], total, observed[0])
+    && roundedPercentageMatches(counts[1], total, observed[1]);
+}
+
+/**
+ * Recover Quiplash's aggregate audience contribution from rounded result shares.
+ * The smallest total consistent with the narration wins, while a player-only
+ * explanation always suppresses inference.
+ */
+export function inferAudienceVote(
+  playerCounts: readonly [number, number],
+  observedPercentages: readonly [number, number],
+): InferredAudienceVote | undefined {
+  if (playerCounts.some((count) => !Number.isInteger(count) || count < 0)) return undefined;
+  if (observedPercentages.some((percent) => !Number.isFinite(percent) || percent < 0 || percent > 100)) {
+    return undefined;
+  }
+  const playerTotal = playerCounts[0] + playerCounts[1];
+  if (playerTotal <= 0) return undefined;
+  if (percentagesMatch(playerCounts, playerTotal, observedPercentages)) return undefined;
+
+  const playerShares: [number, number] = [
+    100 * playerCounts[0] / playerTotal,
+    100 * playerCounts[1] / playerTotal,
+  ];
+  const deltas: [number, number] = [
+    observedPercentages[0] - playerShares[0],
+    observedPercentages[1] - playerShares[1],
+  ];
+  const audienceChoice = deltas[0] > 1e-9 && deltas[0] > deltas[1]
+    ? 0
+    : deltas[1] > 1e-9 && deltas[1] > deltas[0]
+      ? 1
+      : undefined;
+  if (audienceChoice === undefined) return undefined;
+
+  for (let weight = 1; weight <= MAX_INFERRED_AUDIENCE_UNITS; weight += 1) {
+    const combined: [number, number] = [...playerCounts];
+    combined[audienceChoice] += weight;
+    const totalVotes = playerTotal + weight;
+    if (percentagesMatch(combined, totalVotes, observedPercentages)) {
+      return { choice: audienceChoice, weight, totalVotes };
+    }
+  }
+  return undefined;
 }
 
 function submissionKey(gameId: string, playerId: string, prompt: string): string {
@@ -132,6 +221,154 @@ function matchedAnswerIndexes(
     : [matched[0], matched[1]];
 }
 
+function observedTargetFromRows(
+  observed: MatchupObservedEvent,
+  matchupRows: readonly (typeof matchups.$inferSelect)[],
+  answerRows: readonly (typeof answers.$inferSelect)[],
+  thriplashRows: readonly (typeof thriplashes.$inferSelect)[],
+): ObservedTarget | undefined {
+  for (const matchup of matchupRows) {
+    if (normalizedPrompt(matchup.prompt) !== normalizedPrompt(observed.prompt)) continue;
+    const storedAnswers = answerRows.filter((answer) => answer.matchupId === matchup.id);
+    const choices = matchedAnswerIndexes(observed.answers, storedAnswers);
+    if (choices) return { matchupId: matchup.id, thriplashId: null, choices };
+  }
+
+  const thriplash = thriplashRows[0];
+  if (thriplash && normalizedPrompt(thriplash.prompt) === normalizedPrompt(observed.prompt)) {
+    const storedAnswers = answerRows.filter((answer) => answer.thriplashId === thriplash.id);
+    const choices = matchedAnswerIndexes(observed.answers, storedAnswers);
+    if (choices) return { matchupId: null, thriplashId: thriplash.id, choices };
+  }
+  return undefined;
+}
+
+async function resolveObservedTarget(
+  db: ArenaDatabaseClient,
+  observed: MatchupObservedEvent,
+): Promise<ObservedTarget | undefined> {
+  const [matchupRows, answerRows, thriplashRows] = await Promise.all([
+    db.select().from(matchups).where(eq(matchups.gameId, observed.gameId)),
+    db.select().from(answers).where(eq(answers.gameId, observed.gameId)),
+    db.select().from(thriplashes).where(eq(thriplashes.gameId, observed.gameId)).limit(1),
+  ]);
+  return observedTargetFromRows(observed, matchupRows, answerRows, thriplashRows);
+}
+
+function targetCondition(target: ObservedTarget) {
+  if (target.matchupId !== null) return eq(votes.matchupId, target.matchupId);
+  if (target.thriplashId !== null) return eq(votes.thriplashId, target.thriplashId);
+  throw new Error("An observed audience vote target must identify a matchup or Thriplash");
+}
+
+function audienceVoteId(gameId: string, target: ObservedTarget, choice: number): string {
+  return stableId("audience-vote", {
+    gameId,
+    matchupId: target.matchupId,
+    thriplashId: target.thriplashId,
+    choice,
+  });
+}
+
+async function reconcileObservedAudienceVote(
+  db: ArenaDatabaseClient,
+  observed: MatchupObservedEvent,
+  audienceVotes: AudienceVotesEvent | undefined,
+  target: ObservedTarget,
+): Promise<"counted" | "inferred" | "none"> {
+  const directCounts = audienceVotes?.counts.slice(0, 2);
+  const hasValidDirectCounts = directCounts?.length === 2
+    && directCounts.every((count) => Number.isFinite(count) && count >= 0);
+  if (audienceVotes && hasValidDirectCounts && directCounts.some((count) => count > 0)) {
+    await db.delete(votes).where(and(
+      targetCondition(target),
+      eq(votes.population, "audience"),
+      eq(votes.source, "game"),
+    ));
+    for (const [localChoice, weight] of directCounts.entries()) {
+      if (weight <= 0) continue;
+      const choice = target.choices[localChoice];
+      if (choice === undefined) continue;
+      await db.insert(votes).values({
+        id: audienceVoteId(observed.gameId, target, choice),
+        gameId: observed.gameId,
+        matchupId: target.matchupId,
+        thriplashId: target.thriplashId,
+        voterId: null,
+        population: "audience",
+        source: "game",
+        choice,
+        weight,
+        inferred: false,
+        createdAt: eventDate(audienceVotes.at),
+      });
+    }
+    return "counted";
+  }
+
+  // A nonzero fetched/count-group row is authoritative for this target.
+  const countedRows = await db.select({ id: votes.id }).from(votes).where(and(
+    targetCondition(target),
+    eq(votes.population, "audience"),
+    eq(votes.source, "game"),
+    eq(votes.inferred, false),
+  )).limit(1);
+  if (countedRows.length > 0) return "counted";
+
+  // The current inference contract is only valid for normal two-author
+  // matchups, where all other occupied seats vote.
+  if (target.matchupId === null || !observed.percentages) return "none";
+  const [players, playerVoteRows] = await Promise.all([
+    db.select({ playerId: gamePlayers.playerId }).from(gamePlayers)
+      .where(eq(gamePlayers.gameId, observed.gameId)),
+    db.select({ choice: votes.choice, weight: votes.weight, voterId: votes.voterId }).from(votes)
+      .where(and(eq(votes.matchupId, target.matchupId), eq(votes.population, "player"))),
+  ]);
+  const expectedPlayerVotes = Math.max(0, players.length - 2);
+  const completePlayerVotes = expectedPlayerVotes > 0
+    && playerVoteRows.length === expectedPlayerVotes
+    && playerVoteRows.every((vote) => vote.voterId !== null && vote.weight === 1);
+  if (!completePlayerVotes) return "none";
+
+  const playerCounts = target.choices.map((choice) => playerVoteRows
+    .filter((vote) => vote.choice === choice)
+    .reduce((sum, vote) => sum + vote.weight, 0)) as [number, number];
+  if (playerCounts[0] + playerCounts[1] !== expectedPlayerVotes) return "none";
+  const inferred = inferAudienceVote(playerCounts, observed.percentages);
+
+  await db.delete(votes).where(and(
+    targetCondition(target),
+    eq(votes.population, "audience"),
+    eq(votes.source, "game"),
+    eq(votes.inferred, true),
+  ));
+  if (!inferred) return "none";
+
+  const choice = target.choices[inferred.choice];
+  await db.insert(votes).values({
+    id: audienceVoteId(observed.gameId, target, choice),
+    gameId: observed.gameId,
+    matchupId: target.matchupId,
+    thriplashId: null,
+    voterId: null,
+    population: "audience",
+    source: "game",
+    choice,
+    weight: inferred.weight,
+    inferred: true,
+    createdAt: eventDate(observed.at),
+  }).onConflictDoUpdate({
+    target: votes.id,
+    set: {
+      choice,
+      weight: inferred.weight,
+      inferred: true,
+      createdAt: eventDate(observed.at),
+    },
+  });
+  return "inferred";
+}
+
 function modelLab(slug: string): string {
   return slug.split("/", 1)[0]?.trim() || "unknown";
 }
@@ -141,7 +378,11 @@ function hasGameId(event: GameEvent): event is GameEvent & { gameId: string } {
 }
 
 function traceUsage(event: TraceEvent): Record<string, unknown> | null {
-  return event.usage ? { ...event.usage } : null;
+  if (!event.usage && !event.attempts) return null;
+  return {
+    ...(event.usage ?? {}),
+    ...(event.attempts === undefined ? {} : { attempts: event.attempts }),
+  };
 }
 
 /** Persist normalized game state plus the immutable raw GameEvent stream. */
@@ -479,6 +720,7 @@ export class Recorder {
         source,
         choice: vote.choice,
         weight: vote.weight ?? 1,
+        inferred: false,
         createdAt: eventDate(at),
       }).onConflictDoNothing({ target: votes.id });
     }
@@ -534,64 +776,12 @@ export class Recorder {
     const unresolved: PendingObservedMatchup[] = [];
 
     for (const item of pending) {
-      const observedAnswers = item.observed.answers;
-      let target: {
-        matchupId: string | null;
-        thriplashId: string | null;
-        choices: [number, number];
-      } | undefined;
-
-      for (const matchup of matchupRows) {
-        if (normalizedPrompt(matchup.prompt) !== normalizedPrompt(item.observed.prompt)) continue;
-        const storedAnswers = answerRows.filter((answer) => answer.matchupId === matchup.id);
-        const choices = matchedAnswerIndexes(observedAnswers, storedAnswers);
-        if (choices) {
-          target = { matchupId: matchup.id, thriplashId: null, choices };
-          break;
-        }
-      }
-
-      const thriplash = thriplashRows[0];
-      if (!target && thriplash
-        && normalizedPrompt(thriplash.prompt) === normalizedPrompt(item.observed.prompt)) {
-        const storedAnswers = answerRows.filter((answer) => answer.thriplashId === thriplash.id);
-        const choices = matchedAnswerIndexes(observedAnswers, storedAnswers);
-        if (choices) target = { matchupId: null, thriplashId: thriplash.id, choices };
-      }
-
+      const target = observedTargetFromRows(item.observed, matchupRows, answerRows, thriplashRows);
       if (!target) {
         unresolved.push(item);
         continue;
       }
-      if (!item.audienceVotes) continue;
-      for (const [localChoice, countValue] of item.audienceVotes.counts.entries()) {
-        if (!Number.isFinite(countValue) || countValue <= 0) continue;
-        const choice = target.choices[localChoice];
-        if (choice === undefined) continue;
-        const identity = {
-          gameId,
-          matchupId: target.matchupId,
-          thriplashId: target.thriplashId,
-          prompt: normalizedPrompt(item.observed.prompt),
-          answers: item.observed.answers.map(normalizedText),
-          choice,
-        };
-        await db.insert(votes).values({
-          id: stableId("audience-vote", identity),
-          gameId,
-          matchupId: target.matchupId,
-          thriplashId: target.thriplashId,
-          voterId: null,
-          population: "audience",
-          source: "game",
-          choice,
-          weight: countValue,
-          createdAt: eventDate(item.audienceVotes.at),
-        }).onConflictDoUpdate({
-          target: votes.id,
-          set: { weight: countValue },
-        });
-      }
+      await reconcileObservedAudienceVote(db, item.observed, item.audienceVotes, target);
     }
     this.pendingObservedMatchups.set(gameId, unresolved);
   }
@@ -660,6 +850,44 @@ export class Recorder {
       createdAt: eventDate(event.at),
     }).onConflictDoNothing({ target: traces.id });
   }
+}
+
+/** Re-run audience result reconciliation from the immutable stored event stream. */
+export async function backfillAudienceVotes(
+  db: ArenaDatabaseClient,
+): Promise<AudienceBackfillResult> {
+  const eventRows = await db.select({ payload: events.payload }).from(events).orderBy(asc(events.id));
+  const latestCounts = new Map<string, AudienceVotesEvent>();
+  const affectedGames = new Set<string>();
+  const result: AudienceBackfillResult = {
+    observedMatchups: 0,
+    inferredVotes: 0,
+    countedVotes: 0,
+  };
+
+  for (const { payload } of eventRows) {
+    if (payload.type === "audience.votes") {
+      latestCounts.set(
+        canonical([payload.gameId, normalizedPrompt(payload.prompt)]),
+        payload,
+      );
+      continue;
+    }
+    if (payload.type !== "matchup.observed" || !payload.percentages) continue;
+    result.observedMatchups += 1;
+    const key = canonical([payload.gameId, normalizedPrompt(payload.prompt)]);
+    const audienceVotes = latestCounts.get(key);
+    latestCounts.delete(key);
+    const target = await resolveObservedTarget(db, payload);
+    if (!target) continue;
+    const outcome = await reconcileObservedAudienceVote(db, payload, audienceVotes, target);
+    if (outcome === "inferred") result.inferredVotes += 1;
+    if (outcome === "counted") result.countedVotes += 1;
+    if (outcome !== "none") affectedGames.add(payload.gameId);
+  }
+
+  for (const gameId of affectedGames) await finalizeGameScores(db, gameId);
+  return result;
 }
 
 /** Recompute and persist all score projections for one normalized game. */
@@ -766,8 +994,8 @@ export async function loadGame(db: ArenaDatabaseClient, gameId: string): Promise
       }))
     : undefined;
   const finalScores = observedFinalScores && Object.keys(observedFinalScores).length > 0
-    ? { ...(game.finalScores ?? {}), ...observedFinalScores }
-    : game.finalScores;
+    ? observedFinalScores
+    : undefined;
   const observedPlacements = Object.fromEntries(playerRows.flatMap((player) => (
     player.observedPlacement === null ? [] : [[player.playerId, player.observedPlacement]]
   )));
@@ -784,7 +1012,8 @@ export async function loadGame(db: ArenaDatabaseClient, gameId: string): Promise
     })),
     matchups: gameMatchups,
     ...(finalRound === undefined ? {} : { thriplash: finalRound }),
-    ...(finalScores === null || finalScores === undefined ? {} : { finalScores }),
+    ...(game.finalScores === null ? {} : { finalScores: game.finalScores }),
+    ...(finalScores === undefined ? {} : { observedScores: finalScores }),
     ...(Object.keys(observedPlacements).length === 0 ? {} : { observedPlacements }),
   };
 }

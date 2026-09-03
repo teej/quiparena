@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 
 import type { AnyEvent, Game } from "@quiparena/core";
 import type { Player } from "@quiparena/jackbox";
@@ -64,8 +64,12 @@ export interface RunLoopOptions {
   ratingsOptions?: ComputeRatingsOptions;
   /** Completed history, oldest first, used when this process has no local DB. */
   seedHistory?: readonly LobbyGameHistory[];
-  /** Test/ops escape hatch; the CLI intentionally leaves this unset. */
+  /** Stop after this many completed games. */
   maxGames?: number;
+  /** File whose presence arms a graceful stop at the next game boundary. */
+  stopFile?: string;
+  /** Process-level graceful stop signal, sampled only between games. */
+  stopRequested?: () => boolean;
   runGame?: (options: RunGameOptions) => Promise<Game>;
   onGame?: (game: Game, roster: readonly RosterModel[], ratings?: RatingRun) => void | Promise<void>;
 }
@@ -73,7 +77,7 @@ export interface RunLoopOptions {
 export interface LoopResult {
   games: Game[];
   spentUsd: number;
-  reason: "spend-cap" | "aborted" | "max-games";
+  reason: "spend-cap" | "aborted" | "max-games" | "graceful-stop";
 }
 
 function positiveNumber(value: string | undefined, fallback: number, label: string): number {
@@ -118,6 +122,17 @@ async function roomFileCode(path: string | undefined): Promise<string | undefine
   }
 }
 
+async function fileExists(path: string | undefined): Promise<boolean> {
+  if (!path) return false;
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function roomStillExists(client: GameClient, roomCode: string): Promise<boolean> {
   try {
     await client.lookupRoom(roomCode);
@@ -134,12 +149,14 @@ async function waitForReplacementRoom(
   pollIntervalMs: number,
   logger: LoopLogger,
   signal?: AbortSignal,
-): Promise<string> {
+  stopRequested?: () => Promise<boolean>,
+): Promise<string | null> {
   logger.error(
     `[quiparena/worker] ROOM ${deadRoomCode} IS GONE. Update ROOM_CODE or ${roomFile ?? "pass --room-file PATH"}.`,
   );
   for (;;) {
     if (signal?.aborted) throw new GameAbortedError();
+    if (await stopRequested?.()) return null;
     const fileCode = await roomFileCode(roomFile);
     const envCode = process.env["ROOM_CODE"]?.trim().toUpperCase();
     const candidate = fileCode ?? envCode;
@@ -152,6 +169,7 @@ async function waitForReplacementRoom(
 }
 
 function lobbyScores(game: Game): Record<string, number> {
+  if (game.observedScores) return { ...(game.finalScores ?? {}), ...game.observedScores };
   if (game.finalScores) return game.finalScores;
   const scores = Object.fromEntries(game.players.map((player) => [player.id, 0])) as Record<string, number>;
   for (const matchup of game.matchups) {
@@ -187,9 +205,10 @@ function historyApiUrl(value: string): URL {
 export async function loadLobbyHistoryFromApi(
   ingestUrl: string,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  signal?: AbortSignal,
 ): Promise<LobbyGameHistory[]> {
   const listUrl = historyApiUrl(ingestUrl);
-  const response = await fetchImpl(listUrl);
+  const response = await fetchImpl(listUrl, signal ? { signal } : undefined);
   if (!response.ok) throw new Error(`Game history API returned ${response.status} ${response.statusText}`);
   const payload: unknown = await response.json();
   if (!Array.isArray(payload)) throw new Error("Game history API did not return an array");
@@ -202,7 +221,7 @@ export async function loadLobbyHistoryFromApi(
 
   return (await Promise.all(completed.map(async (summary) => {
     const gameUrl = new URL(`/api/games/${encodeURIComponent(String(summary["id"]))}`, listUrl);
-    const gameResponse = await fetchImpl(gameUrl);
+    const gameResponse = await fetchImpl(gameUrl, signal ? { signal } : undefined);
     if (!gameResponse.ok) {
       throw new Error(`Game history API could not load ${String(summary["id"])}: ${gameResponse.status}`);
     }
@@ -237,6 +256,14 @@ export async function loadLobbyHistoryFromApi(
         ...(isRecord(game["thriplash"]) ? { thriplash: game["thriplash"] as unknown as NonNullable<Game["thriplash"]> } : {}),
       };
       finalScores = scoreGame(scoreable).finalScores;
+    }
+    const observedScores = isRecord(game["observedScores"])
+      ? Object.fromEntries(Object.entries(game["observedScores"]).filter(
+          (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ))
+      : undefined;
+    if (observedScores && Object.keys(observedScores).length > 0) {
+      finalScores = { ...(finalScores ?? {}), ...observedScores };
     }
     const observedPlacements = isRecord(game["observedPlacements"])
       ? Object.fromEntries(Object.entries(game["observedPlacements"]).filter(
@@ -285,7 +312,7 @@ function toHistory(game: Game, failures: ReadonlySet<string>): LobbyGameHistory 
         ...(totalScore === undefined ? {} : { totalScore }),
       };
     }),
-    ...(game.finalScores === undefined ? {} : { finalScores: game.finalScores }),
+    ...(Object.keys(rankingScores).length === 0 ? {} : { finalScores: rankingScores }),
     failures: [...failures],
   };
 }
@@ -306,6 +333,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const spendCap = options.dailySpendCapUsd
     ?? positiveNumber(process.env["DAILY_SPEND_CAP_USD"], DEFAULT_DAILY_SPEND_CAP_USD, "DAILY_SPEND_CAP_USD");
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
+  if (options.maxGames !== undefined && (!Number.isInteger(options.maxGames) || options.maxGames < 1)) {
+    throw new Error("maxGames must be a positive integer");
+  }
   let initialHistory = [...(options.seedHistory ?? [])];
   if (options.db) {
     const abandoned = await abandonStaleGames(options.db);
@@ -328,6 +358,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let spentUsd = 0;
   let currentRoomCode = options.roomCode.trim().toUpperCase();
   let lastGame: LobbyGameHistory | null = initialHistory.at(-1) ?? null;
+  let gracefulStopArmed = false;
+
+  const shouldGracefullyStop = async (): Promise<boolean> => {
+    if (gracefulStopArmed) return true;
+    const signaled = options.stopRequested?.() ?? false;
+    const filed = await fileExists(options.stopFile);
+    if (!signaled && !filed) return false;
+    gracefulStopArmed = true;
+    const source = signaled && filed ? "SIGUSR1 + stop file" : signaled ? "SIGUSR1" : `stop file ${options.stopFile}`;
+    logger.warn(`[quiparena/worker] graceful stop armed by ${source}; exiting at the game boundary`);
+    return true;
+  };
 
   const logPick = (pick: LobbyPickRationale<RosterModel>): void => {
     if (pick.role === "keeper") {
@@ -378,6 +420,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (options.signal?.aborted) {
         return { games: gamesRun, spentUsd, reason: "aborted" };
       }
+      if (await shouldGracefullyStop()) {
+        return { games: gamesRun, spentUsd, reason: "graceful-stop" };
+      }
       const nextRoster = pickNextLobby({
         roster: options.roster,
         lastGame,
@@ -413,14 +458,17 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         }
         logger.error(`[quiparena/worker] game in room ${currentRoomCode} failed`, error);
         if (!await roomStillExists(gameClient, currentRoomCode)) {
-          currentRoomCode = await waitForReplacementRoom(
+          const replacement = await waitForReplacementRoom(
             gameClient,
             currentRoomCode,
             options.roomFile,
             pollIntervalMs,
             logger,
             options.signal,
+            shouldGracefullyStop,
           );
+          if (!replacement) return { games: gamesRun, spentUsd, reason: "graceful-stop" };
+          currentRoomCode = replacement;
         } else {
           await delay(pollIntervalMs, options.signal);
         }
@@ -446,15 +494,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (options.maxGames !== undefined && gamesRun.length >= options.maxGames) {
         return { games: gamesRun, spentUsd, reason: "max-games" };
       }
+      if (await shouldGracefullyStop()) {
+        return { games: gamesRun, spentUsd, reason: "graceful-stop" };
+      }
       if (!await roomStillExists(gameClient, currentRoomCode)) {
-        currentRoomCode = await waitForReplacementRoom(
+        const replacement = await waitForReplacementRoom(
           gameClient,
           currentRoomCode,
           options.roomFile,
           pollIntervalMs,
           logger,
           options.signal,
+          shouldGracefullyStop,
         );
+        if (!replacement) return { games: gamesRun, spentUsd, reason: "graceful-stop" };
+        currentRoomCode = replacement;
       }
     }
   } catch (error) {

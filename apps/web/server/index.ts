@@ -19,12 +19,14 @@ export async function main(): Promise<void> {
     const db = await openDb();
     const dbStore = new DbStore(db);
     store = dbStore;
-    // Housekeeping: the ratings pass also abandons games left "running" for 30+ minutes and
-    // backfills scores, so run it at startup and on a timer rather than only after game.ended.
+    // Housekeeping runs before live-state hydration so a stale game is never
+    // restored as the current lobby after a restart.
+    await dbStore.recomputeRatings().catch((error: unknown) => {
+      console.error("QuipArena startup housekeeping failed", error);
+    });
     const sweep = () => void dbStore.recomputeRatings().catch((error: unknown) => {
       console.error("QuipArena housekeeping failed", error);
     });
-    sweep();
     setInterval(sweep, 5 * 60_000).unref();
     console.log(`QuipArena store: database (${db.$driver})`);
   } else {

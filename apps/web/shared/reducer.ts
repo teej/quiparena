@@ -27,6 +27,7 @@ export function createEmptyLiveState(): LiveState {
     matchups: [],
     thriplash: null,
     finalScores: null,
+    observedScores: null,
     observedPlacements: null,
     traces: {},
     error: null,
@@ -189,6 +190,8 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         prompt: event.prompt,
         reasoning: event.reasoning,
         answer: event.answer,
+        ...(event.usage === undefined ? {} : { usage: event.usage }),
+        ...(event.attempts === undefined ? {} : { attempts: event.attempts }),
         at: event.at,
       });
     }
@@ -280,9 +283,9 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
       }
       return {
         ...state,
-        finalScores: Object.keys(observedScores).length > 0
-          ? { ...(state.finalScores ?? {}), ...observedScores }
-          : state.finalScores,
+        observedScores: Object.keys(observedScores).length > 0
+          ? { ...(state.observedScores ?? {}), ...observedScores }
+          : state.observedScores,
         observedPlacements: Object.keys(observedPlacements).length > 0
           ? observedPlacements
           : state.observedPlacements,
@@ -293,7 +296,7 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         ...state,
         endedAt: event.at,
         phase: "ended",
-        finalScores: state.observedPlacements ? state.finalScores : event.finalScores ?? state.finalScores,
+        finalScores: event.finalScores ?? state.finalScores,
         players: Object.fromEntries(
           Object.entries(state.players).map(([id, player]) => [id, { ...player, activity: "done" as const }]),
         ),
@@ -332,6 +335,7 @@ export function liveStateToGame(state: LiveState): Game | null {
     ...(state.endedAt ? { endedAt: state.endedAt } : {}),
     ...(state.thriplash ? { thriplash: state.thriplash } : {}),
     ...(state.finalScores ? { finalScores: state.finalScores } : {}),
+    ...(state.observedScores ? { observedScores: state.observedScores } : {}),
     ...(state.observedPlacements ? { observedPlacements: state.observedPlacements } : {}),
   };
 }

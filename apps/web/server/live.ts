@@ -11,11 +11,16 @@ const EVENT_TYPES = new Set([
   "game.started",
   "round.started",
   "prompt.dealt",
+  "answer.rejected",
   "answer.submitted",
   "vote.requested",
   "vote.cast",
   "matchup.resolved",
   "thriplash.resolved",
+  "matchup.observed",
+  "scoreboard.observed",
+  "standings.observed",
+  "audience.votes",
   "game.ended",
   "harness.error",
   "thinking.delta",
@@ -48,6 +53,11 @@ export class LiveCoordinator {
 
   get subscriberCount(): number {
     return this.subscribers.size;
+  }
+
+  async hydrate(): Promise<void> {
+    if (!this.store.loadLiveState) return;
+    this.currentState = await this.store.loadLiveState();
   }
 
   subscribe(subscriber: Subscriber): () => void {

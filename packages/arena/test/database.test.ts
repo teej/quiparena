@@ -2,6 +2,7 @@ import { asc, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { openDb } from "../src/db/client.js";
+import { Recorder } from "../src/recorder.js";
 import {
   abandonGame,
   abandonStaleGames,
@@ -78,6 +79,7 @@ describe("database schema and migrations", () => {
         population: "audience",
         source: "twitch",
         weight: 37.5,
+        inferred: false,
       });
       await db.update(games).set({ observedScores: [{ name: "Model", score: 123 }] });
       expect((await db.select().from(games))[0]?.observedScores).toEqual([
@@ -103,6 +105,25 @@ describe("database schema and migrations", () => {
       await expect(abandonGame(db, "missing")).resolves.toBe(false);
       const statuses = Object.fromEntries((await db.select().from(games)).map((game) => [game.id, game.status]));
       expect(statuses).toEqual({ stale: "abandoned", fresh: "abandoned", done: "completed" });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("abandons a running game when a later game.created reaches the same recorder", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    try {
+      const recorder = new Recorder(db);
+      await recorder.record({ type: "game.created", gameId: "first", roomCode: "OLD1", at: "2026-09-02T11:58:00Z" });
+      await recorder.record({ type: "game.started", gameId: "first", at: "2026-09-02T11:59:00Z" });
+      await recorder.record({ type: "game.created", gameId: "second", roomCode: "NEW1", at: "2026-09-02T12:00:00Z" });
+
+      await expect(abandonStaleGames(db, {
+        now: new Date("2026-09-02T12:01:00Z"),
+        maxAgeMs: 60 * 60_000,
+      })).resolves.toEqual(["first"]);
+      expect((await db.select().from(games)).find((game) => game.id === "first")?.status)
+        .toBe("abandoned");
     } finally {
       await db.close();
     }

@@ -18,3 +18,4 @@ spike/.browsers/
 
 # live game recordings (may contain seat credentials)
 recordings/
+.data/

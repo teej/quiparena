@@ -1,18 +1,41 @@
 import type { Matchup } from "@quiparena/core";
 import { Link, useParams } from "react-router";
 
-import { liveStateToGame, replayEvents } from "../../../shared/reducer.js";
+import { replayEvents } from "../../../shared/reducer.js";
 import type { AnswerTrace, ArchivedGame } from "../../../shared/types.js";
 import { formatDate, formatScore } from "../api.js";
 import { useApi } from "../hooks/useApi.js";
 
 const LETTERS = ["A", "B"] as const;
 
+function duration(ms: number): string {
+  return ms >= 1_000 ? `${(ms / 1_000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+function traceAnnotation(trace: AnswerTrace | undefined): string | null {
+  if (!trace) return null;
+  const parts: string[] = [];
+  if (trace.usage?.totalMs !== undefined) parts.push(duration(trace.usage.totalMs));
+  if (trace.usage?.firstTokenMs != null) parts.push(`${duration(trace.usage.firstTokenMs)} first tok`);
+  const reasoningTokens = trace.usage?.reasoningTokens
+    ?? trace.attempts?.reduce((sum, attempt) => sum + attempt.reasoningTokens, 0);
+  if (reasoningTokens !== undefined) parts.push(`${reasoningTokens} reasoning tok`);
+  const revisions = Math.max(0, (trace.attempts?.length ?? 1) - 1);
+  if (revisions > 0) parts.push(`revised ${revisions}x`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 function Trace({ trace }: { trace: AnswerTrace | undefined }) {
-  if (!trace?.reasoning) return <p className="trace trace--none">no reasoning kept</p>;
+  const annotation = traceAnnotation(trace);
+  if (!trace?.reasoning) return (
+    <div className="trace trace--none">
+      {annotation && <p className="trace__timing">{annotation}</p>}
+      <p>no reasoning kept</p>
+    </div>
+  );
   return (
     <details className="trace">
-      <summary>reasoning</summary>
+      <summary>reasoning{annotation && <span className="trace__timing">{annotation}</span>}</summary>
       <pre>{trace.reasoning}</pre>
     </details>
   );
@@ -23,6 +46,7 @@ function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
   letter: string; text: string; author: string; voters: string[]; tally: number; leader: boolean; trace: AnswerTrace | undefined;
 }) {
   const hasTrace = Boolean(trace?.reasoning);
+  const annotation = traceAnnotation(trace);
   const face = (
     <>
       <span className="option__letter">{letter}</span>
@@ -30,6 +54,7 @@ function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
         <p className="option__text">{text}</p>
         <p className="option__meta">
           <span className="option__author">{author}</span>
+          {annotation && <span className="option__timing">{annotation}</span>}
           <span className="option__votes">{voters.length ? voters.join(", ") : "—"}</span>
         </p>
       </div>
@@ -81,9 +106,15 @@ export function GamePage() {
   if (error || !data) return <div className="page"><p className="note note--error">{error ?? "No such game."}</p></div>;
 
   const replay = replayEvents(data.events);
-  const game = liveStateToGame(replay) ?? data.game;
+  const game = data.game;
   const nameOf = (playerId: string): string => data.game.players.find((player) => player.id === playerId)?.name ?? playerId;
-  const scores = Object.entries(game.finalScores ?? {}).sort((left, right) => right[1] - left[1]);
+  const observed = game.observedScores !== undefined;
+  const scores = Object.entries(game.observedScores ?? game.finalScores ?? {}).sort((left, right) => {
+    const leftPlacement = game.observedPlacements?.[left[0]];
+    const rightPlacement = game.observedPlacements?.[right[0]];
+    if (leftPlacement !== undefined && rightPlacement !== undefined) return leftPlacement - rightPlacement;
+    return right[1] - left[1];
+  });
   let number = 0;
 
   return (
@@ -131,11 +162,11 @@ export function GamePage() {
 
       {scores.length > 0 && (
         <section className="standings">
-          <h2 className="rule-label"><span>final</span></h2>
+          <h2 className="rule-label"><span>{observed ? "observed final" : "final"}</span></h2>
           <ol className="standings__list">
             {scores.map(([playerId, score], index) => (
               <li key={playerId} data-seat={index < 2 ? "kept" : "rotates"}>
-                <span className="standings__rank">{index + 1}</span>
+                <span className="standings__rank">{game.observedPlacements?.[playerId] ?? index + 1}</span>
                 <span className="standings__name">{nameOf(playerId)}</span>
                 <span className="standings__note">{index < 2 ? "keeps the seat" : ""}</span>
                 <span className="standings__score">{formatScore(score)}</span>

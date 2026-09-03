@@ -47,7 +47,7 @@ describe("AudienceObserver", () => {
       winner: 0,
       percentages: [100, 0],
     });
-    expect(matchups[1]).toMatchObject({ winner: "tie" });
+    expect(matchups[1]).toMatchObject({ winner: "tie", percentages: [50, 50] });
     expect(matchups[16]).toMatchObject({
       answers: [
         "DOG TAIL THUMPING ON THE FLOOR\nWIFI RECONNECTING AFTER A DROP\nTODDLER TRYING TO PUT ON SHOES",
@@ -110,6 +110,80 @@ describe("AudienceObserver", () => {
     expect(second.searchParams.get("device-id")).toBe("audience-device");
     expect(second.searchParams.get("user-id")).toBe(first.searchParams.get("user-id"));
     expect(messages).toBe(0);
+  });
+
+  it("polls count-group reads during voting and once at the transition without incrementing", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const requestAfterTransition: boolean[] = [];
+    let transitioned = false;
+    const { server, baseUrl } = await mockServer((socket) => {
+      socket.on("message", (data) => {
+        const request = JSON.parse(data.toString()) as Record<string, unknown>;
+        requests.push(request);
+        requestAfterTransition.push(transitioned);
+        socket.send(JSON.stringify({
+          pc: 0,
+          re: request.seq,
+          opcode: "audience/count-group",
+          result: { key: "quiplash3 Vote", choices: { left: 2, right: 1 } },
+        }));
+      });
+      socket.send(JSON.stringify({
+        pc: 1,
+        opcode: "client/welcome",
+        result: {
+          id: 10000000002,
+          name: "AUDIENCE",
+          secret: "read-only-secret",
+          reconnect: false,
+          entities: {
+            audiencePlayer: ["object", {
+              key: "audiencePlayer",
+              val: {
+                audience: {
+                  state: "MakeSingleChoice",
+                  prompt: { html: "Prompt<br><br>Vote for your favorite" },
+                  choices: [{ key: "left", html: "A" }, { key: "right", html: "B" }],
+                },
+              },
+            }, { locked: false }],
+            "quiplash3 Vote": ["audience/count-group", {
+              key: "quiplash3 Vote",
+              choices: { left: 0, right: 0 },
+            }, { locked: false }],
+          },
+        },
+      }));
+      setTimeout(() => {
+        transitioned = true;
+        socket.send(JSON.stringify({
+          pc: 2,
+          opcode: "object",
+          result: {
+            key: "audiencePlayer",
+            val: { audience: { state: "Logo" } },
+          },
+        }));
+      }, 25);
+    });
+    servers.push(server);
+    const observer = makeObserver({ baseUrl, countGroupPollMs: 5 });
+    const events: GameEvent[] = [];
+    observer.on("event", (event) => events.push(event));
+    await observer.connect();
+    await waitFor(() => requests.length >= 2 && events.some((event) => (
+      event.type === "audience.votes" && event.counts[0] === 2 && event.counts[1] === 1
+    )));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    expect(requestAfterTransition).toContain(false);
+    expect(requestAfterTransition).toContain(true);
+    expect(requests.every((request) => (
+      request.opcode === "audience/count-group/get"
+      && JSON.stringify(request.params) === JSON.stringify({ name: "quiplash3 Vote" })
+    ))).toBe(true);
+    expect(requests.some((request) => String(request.opcode).includes("increment"))).toBe(false);
   });
 
   it("reports an audience-parse harness error and continues", () => {

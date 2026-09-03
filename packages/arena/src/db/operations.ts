@@ -1,10 +1,10 @@
-import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
 import type { LobbyGameHistory } from "../lobby.js";
 import { finalizeGameScores } from "../recorder.js";
 import { placementsFromScores } from "../scoring.js";
 import type { ArenaDatabaseClient } from "./client.js";
-import { gamePlayers, games } from "./schema.js";
+import { events, gamePlayers, games } from "./schema.js";
 
 export const STALE_GAME_AGE_MS = 30 * 60_000;
 
@@ -24,7 +24,7 @@ export async function abandonGame(
   return updated.length > 0;
 }
 
-/** Abandon games whose last durable start time is older than the watchdog window. */
+/** Abandon timed-out games and running games superseded by a later game creation. */
 export async function abandonStaleGames(
   db: ArenaDatabaseClient,
   options: AbandonStaleGamesOptions = {},
@@ -36,10 +36,32 @@ export async function abandonStaleGames(
     throw new RangeError("maxAgeMs must be a non-negative number");
   }
   const cutoff = new Date(now.getTime() - maxAgeMs);
+  const [running, creations] = await Promise.all([
+    db.select({ id: games.id, startedAt: games.startedAt }).from(games)
+      .where(eq(games.status, "running")),
+    db.select({ id: events.id, gameId: events.gameId }).from(events)
+      .where(eq(events.type, "game.created"))
+      .orderBy(asc(events.id)),
+  ]);
+  const firstCreation = new Map<string, number>();
+  for (const creation of creations) {
+    if (creation.gameId && !firstCreation.has(creation.gameId)) {
+      firstCreation.set(creation.gameId, creation.id);
+    }
+  }
+  const staleIds = running.flatMap((game) => {
+    const creationId = firstCreation.get(game.id);
+    const superseded = creationId !== undefined && creations.some((creation) => (
+      creation.gameId !== null && creation.gameId !== game.id && creation.id > creationId
+    ));
+    return game.startedAt <= cutoff || superseded ? [game.id] : [];
+  });
+  if (staleIds.length === 0) return [];
   const updated = await db.update(games).set({ status: "abandoned" })
-    .where(and(eq(games.status, "running"), lte(games.startedAt, cutoff)))
+    .where(and(eq(games.status, "running"), inArray(games.id, staleIds)))
     .returning({ id: games.id });
-  return updated.map((game) => game.id);
+  const updatedIds = new Set(updated.map((game) => game.id));
+  return staleIds.filter((id) => updatedIds.has(id));
 }
 
 /** Fill scores missing from completed pre-scoring archives using their resolved vote rows. */
@@ -84,6 +106,7 @@ export async function loadLobbyHistoryFromDb(
   const gameRows = await db.select({
     id: games.id,
     finalScores: games.finalScores,
+    observedScores: games.observedScores,
   }).from(games)
     .where(eq(games.status, "completed"))
     .orderBy(asc(games.startedAt), asc(games.id));
@@ -94,9 +117,20 @@ export async function loadLobbyHistoryFromDb(
     .orderBy(asc(gamePlayers.gameId), asc(gamePlayers.seat));
   return gameRows.map((game) => {
     const players = playerRows.filter((player) => player.gameId === game.id);
-    const observedFinalScores = Object.fromEntries(players.flatMap((player) => (
+    const observedFromPlayers = Object.fromEntries(players.flatMap((player) => (
       player.observedScore === null ? [] : [[player.playerId, player.observedScore]]
     )));
+    const playerByName = new Map(players.map((player) => [
+      player.name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US"),
+      player.playerId,
+    ]));
+    const observedFromGame = Object.fromEntries((game.observedScores ?? []).flatMap((standing) => {
+      const playerId = playerByName.get(
+        standing.name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US"),
+      );
+      return playerId ? [[playerId, standing.score]] : [];
+    }));
+    const observedFinalScores = { ...observedFromGame, ...observedFromPlayers };
     const finalScores = Object.keys(observedFinalScores).length > 0
       ? { ...(game.finalScores ?? {}), ...observedFinalScores }
       : game.finalScores;

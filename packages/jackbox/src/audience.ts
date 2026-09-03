@@ -32,6 +32,7 @@ interface AudiencePresentation {
   prompt: string;
   answers: [string, string];
   choiceKeys: [string, string];
+  countGroupName?: string;
 }
 
 interface PendingFinalStandings {
@@ -69,6 +70,8 @@ export interface AudienceObserverOptions {
   /** Test/private-server escape hatch. Production callers use audienceHost. */
   baseUrl?: string;
   webSocketOptions?: ClientOptions;
+  /** Override the one-second read-only count fetch cadence in tests. */
+  countGroupPollMs?: number;
 }
 
 interface AudienceObserverEventMap {
@@ -81,8 +84,8 @@ interface AudienceObserverEventMap {
 }
 
 /**
- * A read-only Quiplash audience connection. It intentionally exposes no send
- * operation: WebSocket protocol pongs are the only outbound traffic it allows.
+ * A read-only Quiplash audience connection. Its only application-level send is
+ * audience/count-group/get; it never increments a bucket or casts a vote.
  */
 export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
   readonly gameId: string;
@@ -99,6 +102,12 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
   #awaitingReplacement = false;
   #recording: Promise<void> = Promise.resolve();
   #presentation: AudiencePresentation | undefined;
+  #countGroupName: string | undefined;
+  #voteActive = false;
+  #countGroupPollTimer: NodeJS.Timeout | undefined;
+  #requestSequence = 0;
+  #fetchRejected = false;
+  readonly #countFetchSequences = new Set<number>();
   #scoreboardRound = 0;
   #pendingFinal: PendingFinalStandings | undefined;
   #finalObserved = false;
@@ -149,6 +158,7 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
   /** Stop observing permanently. */
   async close(code = 1000, reason = "audience observer close"): Promise<void> {
     this.#manualClose = true;
+    this.#stopCountGroupPolling();
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
     await this.#closeSocket(code, reason);
@@ -170,6 +180,12 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
     this.#credentials = undefined;
     this.#reconnectAttempts = 0;
     this.#presentation = undefined;
+    this.#countGroupName = undefined;
+    this.#stopCountGroupPolling();
+    this.#voteActive = false;
+    this.#requestSequence = 0;
+    this.#fetchRejected = false;
+    this.#countFetchSequences.clear();
     this.#scoreboardRound = 0;
     this.#pendingFinal = undefined;
     this.#finalObserved = false;
@@ -225,6 +241,18 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
     }
     this.emit("raw", decoded);
 
+    if (typeof decoded.re === "number" && this.#countFetchSequences.has(decoded.re)) {
+      this.#countFetchSequences.delete(decoded.re);
+      if (decoded.opcode === "error") {
+        this.#fetchRejected = true;
+        this.#stopCountGroupPolling();
+        const result = isRecord(decoded.result) ? decoded.result : {};
+        const detail = typeof result.msg === "string" ? `: ${result.msg}` : "";
+        this.#parseError(`Audience count-group get was rejected${detail}`, decoded, timestamp, events);
+        return events;
+      }
+    }
+
     if (decoded.opcode === "client/welcome") {
       const result = isRecord(decoded.result) ? decoded.result : undefined;
       if (!result || typeof result.id !== "number" || typeof result.secret !== "string") {
@@ -245,7 +273,12 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
       const entities = isRecord(result.entities) ? result.entities : {};
       for (const [snapshotKey, tuple] of Object.entries(entities)) {
         const entity = snapshotEntity(snapshotKey, tuple);
-        if (entity) this.#observeEntity(entity.key, entity.value, decoded, timestamp, events);
+        if (!entity) continue;
+        if (entity.type === "audience/count-group") {
+          this.#observeCountGroup(entity.value, decoded, timestamp, events);
+        } else {
+          this.#observeEntity(entity.key, entity.value, decoded, timestamp, events);
+        }
       }
       return events;
     }
@@ -299,7 +332,7 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
       this.on("welcome", welcome);
       socket.on("message", (data) => {
         const raw = rawDataBuffer(data).toString("utf8");
-        this.#record(raw);
+        this.#record(raw, "in");
         this.ingestFrame(raw);
       });
       socket.on("error", (error) => {
@@ -355,6 +388,7 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
   #handleClose(socket: WebSocket, code: number, reason: string): void {
     if (this.#socket !== socket) return;
     this.#socket = undefined;
+    this.#stopCountGroupPolling();
     this.emit("close", code, reason);
     if (this.#manualClose || this.#awaitingReplacement || this.#options.reconnect?.enabled === false) return;
     this.#scheduleReconnect();
@@ -424,8 +458,19 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
           prompt,
           answers: [parsedChoices[0]!.answer, parsedChoices[1]!.answer],
           choiceKeys: [parsedChoices[0]!.key, parsedChoices[1]!.key],
+          ...(typeof projection.countGroupName === "string" && projection.countGroupName
+            ? { countGroupName: projection.countGroupName }
+            : this.#countGroupName ? { countGroupName: this.#countGroupName } : {}),
         };
+        if (key === "audiencePlayer") {
+          this.#voteActive = true;
+          this.#startCountGroupPolling();
+        }
       }
+    } else if (key === "audiencePlayer" && this.#voteActive) {
+      this.#voteActive = false;
+      this.#stopCountGroupPolling();
+      this.#fetchCountGroup();
     }
 
     const descriptions = Array.isArray(record.textDescriptions)
@@ -445,6 +490,13 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
     const group = isRecord(result) ? result : undefined;
     const choices = isRecord(group?.choices) ? group.choices : undefined;
     const presentation = this.#presentation;
+    if (typeof group?.key === "string" && group.key) {
+      this.#countGroupName = group.key;
+      if (presentation) {
+        presentation.countGroupName = group.key;
+        this.#startCountGroupPolling();
+      }
+    }
     if (!choices || !presentation) {
       this.#parseError("Could not associate audience count-group with a matchup", raw, at, events);
       return;
@@ -462,6 +514,34 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
       raw,
       at,
     }, events);
+  }
+
+  #startCountGroupPolling(): void {
+    if (this.#countGroupPollTimer || !this.#voteActive || this.#fetchRejected
+      || !this.#presentation?.countGroupName) return;
+    const intervalMs = this.#options.countGroupPollMs ?? 1_000;
+    this.#countGroupPollTimer = setInterval(() => this.#fetchCountGroup(), intervalMs);
+    this.#countGroupPollTimer.unref();
+  }
+
+  #stopCountGroupPolling(): void {
+    if (this.#countGroupPollTimer) clearInterval(this.#countGroupPollTimer);
+    this.#countGroupPollTimer = undefined;
+  }
+
+  #fetchCountGroup(): void {
+    const socket = this.#socket;
+    const name = this.#presentation?.countGroupName;
+    if (this.#fetchRejected || !name || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const seq = ++this.#requestSequence;
+    const request = JSON.stringify({
+      seq,
+      opcode: "audience/count-group/get",
+      params: { name },
+    });
+    this.#countFetchSequences.add(seq);
+    this.#record(request, "out");
+    socket.send(request);
   }
 
   #observeResults(
@@ -586,9 +666,9 @@ export class AudienceObserver extends EventEmitter<AudienceObserverEventMap> {
     this.#options.onEvent?.(event);
   }
 
-  #record(data: string): void {
+  #record(data: string, dir: "in" | "out"): void {
     if (!this.#options.recordFile) return;
-    const line = `${JSON.stringify({ t: Date.now(), dir: "in", data })}\n`;
+    const line = `${JSON.stringify({ t: Date.now(), dir, data })}\n`;
     this.#recording = this.#recording
       .then(async () => {
         await mkdir(dirname(this.#options.recordFile!), { recursive: true });
@@ -618,12 +698,19 @@ function welcomeFrom(
   };
 }
 
-function snapshotEntity(snapshotKey: string, tuple: unknown): { key: string; value: unknown } | undefined {
+function snapshotEntity(
+  snapshotKey: string,
+  tuple: unknown,
+): { type: string; key: string; value: unknown } | undefined {
   if (!Array.isArray(tuple) || !isRecord(tuple[1])) return undefined;
   const payload = tuple[1];
   const key = typeof payload.key === "string" ? payload.key : snapshotKey;
   const value = "val" in payload ? payload.val : "count" in payload ? payload.count : payload;
-  return { key, value: parseJsonValue(value) };
+  return {
+    type: typeof tuple[0] === "string" ? tuple[0] : "",
+    key,
+    value: parseJsonValue(value),
+  };
 }
 
 function parseJsonValue(value: unknown): unknown {
@@ -639,7 +726,9 @@ function parseMatchupResult(
   text: string,
   answers: readonly [string, string],
 ): { winner: 0 | 1 | "tie"; percentages?: [number, number] } | undefined {
-  if (/^.+?\s+and\s+.+?\s+tied[!.]?$/i.test(text)) return { winner: "tie" };
+  if (/^.+?\s+and\s+.+?\s+tied[!.]?$/i.test(text)) {
+    return { winner: "tie", percentages: [50, 50] };
+  }
   const patterns = [
     /^The\s+winning\s+quip\s+is\s+"([\s\S]+)"\s+by\s+[\s\S]+?\s+with\s+(\d+(?:\.\d+)?)\s+percent\s+of\s+the\s+vote[.!]?$/i,
     /^"([\s\S]+)"\s+by\s+[\s\S]+?\s+got\s+(?:a\s+)?quiplash\s+with\s+(\d+(?:\.\d+)?)\s+percent\s+of\s+the\s+vote[.!]?$/i,

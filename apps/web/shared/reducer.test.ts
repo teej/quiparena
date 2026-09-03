@@ -63,4 +63,23 @@ describe("reduceLiveState", () => {
     expect(next.playerOrder).toEqual([]);
     expect(next).not.toBe(createEmptyLiveState());
   });
+
+  it("keeps observed standings beside computed final scores", () => {
+    const state = replayEvents([
+      { type: "game.created", gameId: "g1", roomCode: "QUIP", at },
+      { type: "player.joined", gameId: "g1", player, at },
+      {
+        type: "standings.observed",
+        gameId: "g1",
+        standings: [{ name: player.name, score: 900, placement: 1 }],
+        winner: player.name,
+        raw: {},
+        at,
+      },
+      { type: "game.ended", gameId: "g1", finalScores: { p1: 750 }, at },
+    ]);
+    expect(state.finalScores).toEqual({ p1: 750 });
+    expect(state.observedScores).toEqual({ p1: 900 });
+    expect(state.observedPlacements).toEqual({ p1: 1 });
+  });
 });

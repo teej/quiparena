@@ -2,6 +2,7 @@ import { NavLink, Outlet, Route, Routes } from "react-router";
 
 import { GamePage } from "./pages/GamePage.js";
 import { GamesPage } from "./pages/GamesPage.js";
+import { FrontierPage } from "./pages/FrontierPage.js";
 import { LeaderboardPage } from "./pages/LeaderboardPage.js";
 import { LivePage } from "./pages/LivePage.js";
 import { TvPage } from "./pages/TvPage.js";
@@ -15,6 +16,7 @@ function SiteLayout() {
           <NavLink to="/" end>Live</NavLink>
           <NavLink to="/games">Games</NavLink>
           <NavLink to="/leaderboard">Leaderboard</NavLink>
+          <NavLink to="/frontier">Frontier</NavLink>
         </nav>
         <a className="site__tv" href="/tv" target="_blank" rel="noreferrer">tv overlay ↗</a>
       </header>
@@ -36,6 +38,7 @@ export function App() {
         <Route path="games" element={<GamesPage />} />
         <Route path="games/:id" element={<GamePage />} />
         <Route path="leaderboard" element={<LeaderboardPage />} />
+        <Route path="frontier" element={<FrontierPage />} />
       </Route>
     </Routes>
   );

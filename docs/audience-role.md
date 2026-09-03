@@ -366,6 +366,43 @@ entity, was `quiplash3 Vote`. Code should preserve/derive the runtime name and
 must not assume it is a universal constant. The spike did **not** send this
 request.
 
+## Count-group fetch spike
+
+A follow-up read-only probe joined `ZSAX` as a separate audience member and
+sent only the controller's count-group `get` request. The exact first request
+and correlated response during a live vote window were:
+
+```json
+{"seq":1,"opcode":"audience/count-group/get","params":{"name":"quiplash3 Vote"}}
+{"pc":0,"re":1,"opcode":"audience/count-group","result":{"key":"quiplash3 Vote","choices":{"left":0,"right":0}}}
+```
+
+It repeated the read once per second during that window. All eleven live-window
+replies were zero. At the transition out of voting it sent:
+
+```json
+{"seq":12,"opcode":"audience/count-group/get","params":{"name":"quiplash3 Vote"}}
+{"pc":0,"re":12,"opcode":"audience/count-group","result":{"key":"quiplash3 Vote","choices":{"left":0,"right":0}}}
+```
+
+The game then narrated 67 percent for the winner, which is consistent with four
+of the six eligible player votes and no audience contribution. Thus production
+accepts audience-role count-group reads, but this probe did not establish that
+they expose a nonzero vote from another audience connection. The literal
+request/reply capture is
+`spike/recordings/audience-fetch-ZSAX-2026-09-03T05-49-41-488Z.jsonl`.
+
+`AudienceObserver` now repeats this read approximately once per second while a
+vote is active and once more on the transition out of the vote window. It never
+sends `audience/count-group/increment`.
+
+Until a nonzero fetch is observed, the recorder infers Quiplash's aggregate
+audience unit from narrated result percentages and the complete player ballot.
+It first tests whether the rounded percentages fit the player votes alone. If
+not, it adds whole audience units to the side whose observed share increased
+and chooses the smallest total vote count whose rounded shares match. A direct
+nonzero count-group result supersedes that inference.
+
 ## Recommendation
 
 1. **Per-matchup results: yes, with qualifications.** The audience gives the

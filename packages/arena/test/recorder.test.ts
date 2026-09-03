@@ -1,11 +1,12 @@
 import type { Game, GameEvent, StreamEvent } from "@quiparena/core";
-import { count } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { openDb } from "../src/db/client.js";
 import { hasAudienceVotes } from "../src/db/queries.js";
 import { answers, events, gamePlayers, games, traces, votes } from "../src/db/schema.js";
-import { Recorder } from "../src/recorder.js";
+import { computeRatings, leaderboard } from "../src/ratings.js";
+import { backfillAudienceVotes, inferAudienceVote, Recorder } from "../src/recorder.js";
 
 const expectedGame: Game = {
   id: "game-roundtrip",
@@ -112,6 +113,20 @@ const traceEvents: StreamEvent[] = [
 ];
 
 describe("Recorder", () => {
+  it("infers the ZSAX audience unit but accepts a rounded six-player result", () => {
+    expect(inferAudienceVote([3, 3], [57, 43])).toEqual({
+      choice: 0,
+      weight: 1,
+      totalVotes: 7,
+    });
+    expect(inferAudienceVote([4, 2], [67, 33])).toBeUndefined();
+    expect(inferAudienceVote([4, 2], [50, 50])).toEqual({
+      choice: 1,
+      weight: 2,
+      totalVotes: 8,
+    });
+  });
+
   it("round-trips a full game and remains idempotent on replay", async () => {
     const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
     const recorder = new Recorder(db);
@@ -201,7 +216,22 @@ describe("Recorder", () => {
       { type: "game.ended", gameId: "observed-game", at },
     ];
     try {
-      for (const event of observedEvents) await recorder.record(event);
+      for (const event of observedEvents) {
+        await recorder.record(event);
+        if (event.type === "matchup.resolved") {
+          await db.insert(votes).values({
+            id: "stale-inferred-audience-vote",
+            gameId: "observed-game",
+            matchupId: "observed-match",
+            voterId: null,
+            population: "audience",
+            source: "game",
+            choice: 0,
+            weight: 1,
+            inferred: true,
+          });
+        }
+      }
 
       const [game] = await db.select().from(games);
       expect(game).toMatchObject({
@@ -227,13 +257,99 @@ describe("Recorder", () => {
         source: "game",
         choice: 1,
         weight: 4,
+        inferred: false,
       });
       await expect(hasAudienceVotes(db)).resolves.toBe(true);
-      expect((await recorder.loadGame("observed-game"))?.finalScores).toEqual({ p1: 999, p2: 1234 });
+      const recordedGame = await recorder.loadGame("observed-game");
+      expect(recordedGame?.finalScores).toEqual({ p1: 200, p2: 900 });
+      expect(recordedGame?.observedScores).toEqual({ p1: 999, p2: 1234 });
       expect(warnings).toEqual(expect.arrayContaining([
         expect.stringContaining("player=Alpha computed=200 observed=999"),
         expect.stringContaining("player=Beta computed=900 observed=1234"),
       ]));
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("persists and backfills a ZSAX-style inferred audience vote", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    const recorder = new Recorder(db);
+    const at = "2026-09-03T05:46:00.000Z";
+    const gameId = "zsax-inference";
+    const players = Array.from({ length: 8 }, (_value, index) => ({
+      id: `p${index + 1}`,
+      name: `Player ${index + 1}`,
+      modelId: `lab/p${index + 1}`,
+    }));
+    const matchup = {
+      id: `${gameId}:r1:m0`,
+      gameId,
+      round: 1 as const,
+      index: 0,
+      prompt: "There’s the problem! You’ve got a huge _______ stuck in your sink.",
+      answers: [
+        { playerId: "p1", text: "MOIST HAUNTED SPAGHETTI", blank: false },
+        { playerId: "p2", text: "LIVE RACCOON", blank: false },
+      ] as const,
+      votes: players.slice(2).map((player, index) => ({
+        voterId: player.id,
+        population: "player" as const,
+        choice: index < 3 ? 0 : 1,
+      })),
+    };
+    try {
+      await recorder.record({ type: "game.created", gameId, roomCode: "ZSAX", at });
+      for (const player of players) {
+        await recorder.record({ type: "player.joined", gameId, player, at });
+      }
+      await recorder.record({ type: "matchup.resolved", gameId, matchup, at });
+      await recorder.record({
+        type: "matchup.observed",
+        gameId,
+        prompt: matchup.prompt,
+        answers: [matchup.answers[0].text, matchup.answers[1].text],
+        winner: 0,
+        percentages: [57, 43],
+        raw: { opcode: "object" },
+        at,
+      });
+
+      const inferredRows = (await db.select().from(votes)).filter((vote) => vote.population === "audience");
+      expect(inferredRows).toEqual([
+        expect.objectContaining({
+          matchupId: matchup.id,
+          voterId: null,
+          population: "audience",
+          source: "game",
+          choice: 0,
+          weight: 1,
+          inferred: true,
+        }),
+      ]);
+      await expect(hasAudienceVotes(db)).resolves.toBe(true);
+      const ratings = await computeRatings(db, {
+        bootstrapResamples: 0,
+        now: new Date("2026-09-03T05:47:00.000Z"),
+      });
+      expect(ratings.populations.audience.find((entry) => entry.modelSlug === "lab/p1")?.comparisons)
+        .toBe(1);
+      expect((await leaderboard(db, "audience"))[0]).toMatchObject({
+        modelSlug: "lab/p1",
+        population: "audience",
+        comparisons: 1,
+      });
+
+      await db.delete(votes).where(eq(votes.population, "audience"));
+      await expect(hasAudienceVotes(db)).resolves.toBe(false);
+      await expect(backfillAudienceVotes(db)).resolves.toEqual({
+        observedMatchups: 1,
+        inferredVotes: 1,
+        countedVotes: 0,
+      });
+      expect((await db.select().from(votes)).filter((vote) => vote.population === "audience"))
+        .toEqual([expect.objectContaining({ choice: 0, weight: 1, inferred: true })]);
+      await expect(hasAudienceVotes(db)).resolves.toBe(true);
     } finally {
       await db.close();
     }

@@ -64,31 +64,23 @@ events to web over one authenticated websocket; web is the single DB writer.
 
 ## Operating the lobby
 
-Build the whole workspace before an unattended run:
+Run ops from a Terminal that has macOS Screen Recording permission. The host
+agent must inherit that permission; do not launch it from a sandbox.
 
 ```sh
-pnpm build
+pnpm ops up
+pnpm ops status
+pnpm ops logs loop -f
+pnpm ops down --graceful
+pnpm ops restart --graceful
 ```
 
-The worker imports workspace packages through their `dist` exports, even when
-the arena CLI itself is launched through `tsx`; stale or missing builds can
-therefore run stale harness code.
-
-Start components in this order:
-
-1. Host agent: `pnpm --filter @quiparena/arena host-agent --room-file .data/room-code`
-2. Web/API with the database store: `QUIPARENA_STORE=db pnpm --filter @quiparena/web dev`
-3. Worker: `pnpm --filter @quiparena/arena cli loop --room CODE --room-file .data/room-code --ingest http://127.0.0.1:8787`
-
-With `--ingest`, loop startup reads completed games from the web archive API so
-the previous game's top two survive a worker restart. With `--db`, it reads the
-same history directly and also abandons `running` games older than 30 minutes.
-Completed archives created before vote-derived scoring are backfilled from
-their resolved rows on DB-backed loop or ratings startup; API-backed seeding
-computes the same fallback in memory. Ratings also run the stale-game sweep.
-Abandoned games contribute no game-level wins, placements, points, or
-appearance counts; already resolved matchup rows remain valid Bradley-Terry
-comparisons.
+`up` builds, starts host-agent/web/loop in the background, and writes logs and
+pid files under `.data/`. It loads `.env`, persists a generated ingest token if
+needed, and waits for an ecast-confirmed code in `.data/room-code`. Graceful
+down sends `SIGUSR1` to the loop, waits up to 20 minutes for `NEW PLAYERS`, then
+stops web and host-agent. `loop --stop-file PATH` and `loop --max-games N` offer
+the same boundary stop for manual runs; `SIGINT` and `SIGTERM` abort immediately.
 
 The VIP chooses **New Players** after every game. Expect a new code and an empty
 lobby; the host agent writes that code to the room file, and the worker waits

@@ -58,6 +58,7 @@ export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
   const app = createApp(appOptions);
   const httpServer = createAdaptorServer({ fetch: app.fetch }) as Server;
   const sockets = new WebSocketServer({ noServer: true });
+  let hydration: Promise<void> | undefined;
 
   httpServer.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -110,19 +111,23 @@ export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
     httpServer,
     store,
     live,
-    start: (port = 8787, hostname = "127.0.0.1") => new Promise<AddressInfo>((resolve, reject) => {
-      const onError = (error: Error): void => reject(error);
-      httpServer.once("error", onError);
-      httpServer.listen(port, hostname, () => {
-        httpServer.off("error", onError);
-        const address = httpServer.address();
-        if (!address || typeof address === "string") {
-          reject(new Error("Server did not bind to a TCP address"));
-          return;
-        }
-        resolve(address);
+    start: async (port = 8787, hostname = "127.0.0.1") => {
+      hydration ??= live.hydrate();
+      await hydration;
+      return new Promise<AddressInfo>((resolve, reject) => {
+        const onError = (error: Error): void => reject(error);
+        httpServer.once("error", onError);
+        httpServer.listen(port, hostname, () => {
+          httpServer.off("error", onError);
+          const address = httpServer.address();
+          if (!address || typeof address === "string") {
+            reject(new Error("Server did not bind to a TCP address"));
+            return;
+          }
+          resolve(address);
+        });
       });
-    }),
+    },
     close: async () => {
       live.close();
       for (const client of sockets.clients) client.terminate();
