@@ -51,7 +51,52 @@ function mockModelSequence(
   });
 }
 
-function context(deadlineMs = Date.now() + 5_000) {
+function delayedModelSequence(
+  responses: Array<{ text: string; delayMs: number }>,
+): MockLanguageModelV4 {
+  let index = 0;
+  return new MockLanguageModelV4({
+    doStream: async (options) => {
+      const response = responses[Math.min(index, responses.length - 1)] ?? {
+        text: "",
+        delayMs: 0,
+      };
+      index += 1;
+      return {
+        stream: new ReadableStream<MockStreamPart>({
+          start(controller) {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              controller.enqueue({ type: "text-start", id: "text-1" });
+              controller.enqueue({ type: "text-delta", id: "text-1", delta: response.text });
+              controller.enqueue({ type: "text-end", id: "text-1" });
+              controller.enqueue({
+                type: "finish",
+                finishReason: { unified: "stop", raw: undefined },
+                usage,
+                providerMetadata: { openrouter: { usage: { cost: 0.000_123 } } },
+              });
+              controller.close();
+            };
+            const timer = setTimeout(finish, response.delayMs);
+            const abort = () => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              controller.error(options.abortSignal?.reason ?? new Error("aborted"));
+            };
+            if (options.abortSignal?.aborted) abort();
+            else options.abortSignal?.addEventListener("abort", abort, { once: true });
+          },
+        }),
+      };
+    },
+  });
+}
+
+function context(deadlineMs = Date.now() + 20_000) {
   return { gameId: "game-1", round: 1 as const, deadlineMs, maxLength: 45 };
 }
 
@@ -143,6 +188,7 @@ describe("ModelPlayer streaming", () => {
     const player = new ModelPlayer({
       model: "test/revise",
       displayName: "Revise",
+      reasoning: { maxTokens: 600 },
       languageModel: model,
       safetyMarginMs: 0,
       sink: (event) => events.push(event),
@@ -159,12 +205,23 @@ describe("ModelPlayer streaming", () => {
     expect(events.at(-1)).toMatchObject({
       type: "trace.completed",
       answer: "CD fortress",
-      attempts: [{
-        text: "A giant compact disc fortress",
-        reason: "That is 29 characters; the limit is 12. Rewrite it so it fits, keep the joke.",
-      }],
+      attempts: [
+        { kind: "primary", aborted: false },
+        {
+          kind: "corrective",
+          text: "A giant compact disc fortress",
+          reason: "That is 29 characters; the limit is 12. Rewrite it so it fits, keep the joke.",
+          aborted: false,
+        },
+      ],
       usage: { inputTokens: 14, outputTokens: 8, reasoningTokens: 2, costUsd: 0.000_246 },
     });
+    expect(model.doStreamCalls[1]?.providerOptions).toEqual({
+      openrouter: {
+        reasoning: { enabled: false, exclude: true, effort: "none" },
+      },
+    });
+    expect(model.doStreamCalls[1]?.maxOutputTokens).toBe(64);
   });
 
   it("truncates only after two corrective attempts also exceed the limit", async () => {
@@ -186,7 +243,13 @@ describe("ModelPlayer streaming", () => {
     await expect(player.answer("Keep trying", { ...context(), maxLength: 10 }))
       .resolves.toBe("third answ");
     expect(model.doStreamCalls).toHaveLength(3);
-    expect(events.at(-1)).toMatchObject({ attempts: [{}, {}] });
+    expect(events.at(-1)).toMatchObject({
+      attempts: [
+        { kind: "primary" },
+        { kind: "corrective" },
+        { kind: "corrective" },
+      ],
+    });
   });
 
   it("skips a corrective turn when the safety deadline is too close", async () => {
@@ -281,6 +344,7 @@ describe("ModelPlayer streaming", () => {
       displayName: "Deadline",
       languageModel: model,
       safetyMarginMs: 10,
+      fastRetryBudgetMs: 0,
       logger: quietLogger(),
     });
 
@@ -293,6 +357,69 @@ describe("ModelPlayer streaming", () => {
     expect(answer).toBe("half a joke");
     expect(drafts).toEqual(["half a joke"]);
     expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it("aborts an empty primary attempt and succeeds with the no-reasoning fast retry", async () => {
+    const events: StreamEvent[] = [];
+    const model = delayedModelSequence([
+      { text: "too late", delayMs: 250 },
+      { text: "Fast joke", delayMs: 0 },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/fast-retry",
+      displayName: "FastRetry",
+      reasoning: { maxTokens: 600 },
+      languageModel: model,
+      safetyMarginMs: 10,
+      fastRetryBudgetMs: 80,
+      sink: (event) => events.push(event),
+      logger: quietLogger(),
+    });
+
+    await expect(player.answer("Hurry", context(Date.now() + 130))).resolves.toBe("Fast joke");
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(model.doStreamCalls[1]).toMatchObject({
+      maxOutputTokens: 64,
+      providerOptions: {
+        openrouter: {
+          reasoning: { enabled: false, exclude: true, effort: "none" },
+        },
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      attempts: [
+        { kind: "primary", aborted: true },
+        { kind: "fast", aborted: false },
+      ],
+    });
+  });
+
+  it("uses the fallback only after the fast retry also reaches its budget", async () => {
+    const events: StreamEvent[] = [];
+    const model = delayedModelSequence([
+      { text: "too late", delayMs: 250 },
+      { text: "still too late", delayMs: 250 },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/both-timeout",
+      displayName: "BothTimeout",
+      reasoning: { maxTokens: 600 },
+      languageModel: model,
+      safetyMarginMs: 10,
+      fastRetryBudgetMs: 60,
+      sink: (event) => events.push(event),
+      logger: quietLogger(),
+    });
+
+    await expect(player.answer("Hurry", context(Date.now() + 120))).resolves.toBe("no comment");
+    expect(events.at(-1)).toMatchObject({
+      answer: "no comment",
+      attempts: [
+        { kind: "primary", aborted: true },
+        { kind: "fast", aborted: true },
+      ],
+      usage: { totalMs: expect.any(Number), firstTokenMs: null },
+    });
   });
 
   it("returns the blank fallback", async () => {
@@ -334,8 +461,49 @@ describe("ModelPlayer streaming", () => {
       playerId: "seat-2",
       reasoning: "Tiny thought",
       answer: "A punchline",
-      usage: { inputTokens: 7, outputTokens: 4, reasoningTokens: 1, costUsd: 0.000_123 },
+      attempts: [{
+        kind: "primary",
+        ms: expect.any(Number),
+        firstTokenMs: expect.any(Number),
+        reasoningTokens: 1,
+        aborted: false,
+      }],
+      usage: {
+        inputTokens: 7,
+        outputTokens: 4,
+        reasoningTokens: 1,
+        costUsd: 0.000_123,
+        totalMs: expect.any(Number),
+        firstTokenMs: expect.any(Number),
+      },
     });
+  });
+
+  it("maps answer, vote, and Thriplash reasoning budgets into provider and output caps", async () => {
+    const model = mockModelSequence([
+      { text: "Answer" },
+      { text: "A" },
+      { text: "One\nTwo\nThree" },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/budgets",
+      displayName: "Budgets",
+      reasoning: { maxTokens: 600 },
+      languageModel: model,
+      safetyMarginMs: 0,
+      logger: quietLogger(),
+    });
+
+    await player.answer("Prompt", context());
+    await player.vote("Prompt", ["one", "two"], context());
+    await player.answerFinal("Prompt", { ...context(), round: 3 });
+
+    expect(model.doStreamCalls.map((call) => call.maxOutputTokens)).toEqual([728, 216, 1_156]);
+    expect(model.doStreamCalls.map((call) => call.providerOptions)).toEqual([
+      { openrouter: { reasoning: { max_tokens: 600 } } },
+      { openrouter: { reasoning: { max_tokens: 200 } } },
+      { openrouter: { reasoning: { max_tokens: 900 } } },
+    ]);
   });
 
   it("passes reasoning effort through OpenRouter provider options", async () => {

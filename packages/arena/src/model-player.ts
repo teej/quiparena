@@ -17,8 +17,22 @@ import {
   sanitizeAnswer,
 } from "./sanitize.js";
 
-export /** Output-token headroom for effort-based reasoning; the deadline bounds time. */
-const REASONING_HEADROOM_TOKENS = 16_000;
+export const DEFAULT_REASONING_TOKENS = {
+  answer: 600,
+  vote: 200,
+  thriplash: 900,
+} as const;
+
+export const DEFAULT_FAST_RETRY_BUDGET_MS = {
+  answer: 8_000,
+  vote: 4_000,
+} as const;
+
+const FAST_OUTPUT_TOKENS = {
+  answer: 64,
+  vote: 8,
+  thriplash: 128,
+} as const;
 
 const SYSTEM_PROMPT = [
   "You write Quiplash answers.",
@@ -32,7 +46,10 @@ export const DEFAULT_SAFETY_MARGIN_MS = 4_000;
 export type ReasoningEffort = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 export type ReasoningConfig =
   | { effort: ReasoningEffort }
-  | { maxTokens: number };
+  | { maxTokens: number; voteMaxTokens?: number | undefined; thriplashMaxTokens?: number | undefined };
+
+type GenerationPurpose = "answer" | "vote" | "thriplash";
+type AttemptKind = "primary" | "fast" | "corrective";
 
 /** A deliberately tiny interface so traces can go to a websocket, recorder, or console. */
 export interface EventSink {
@@ -54,6 +71,10 @@ export interface ModelPlayerConfig {
   reasoning?: ReasoningConfig | null;
   temperature?: number;
   safetyMarginMs?: number;
+  /** Time held back for an answer or Thriplash retry with reasoning disabled. */
+  fastRetryBudgetMs?: number;
+  /** Time held back for a vote retry with reasoning disabled. */
+  voteFastRetryBudgetMs?: number;
   answerLimit?: number;
   fallback?: string;
   playerId?: string;
@@ -72,11 +93,16 @@ interface GenerationResult {
   reasoning: string;
   usage?: LanguageModelUsage;
   providerMetadata?: ProviderMetadata;
+  kind: AttemptKind;
+  ms: number;
+  firstTokenMs: number | null;
+  startedAfterMs: number;
+  aborted: boolean;
+  correction?: { text: string; reason: string };
 }
 
-type TraceAttempt = NonNullable<
-  Extract<StreamEvent, { type: "trace.completed" }>["attempts"]
->[number];
+type TraceEvent = Extract<StreamEvent, { type: "trace.completed" }>;
+type TraceAttempt = NonNullable<TraceEvent["attempts"]>[number];
 
 const DEFAULT_LOGGER: ModelPlayerLogger = {
   error: (message, error) => console.error(message, error),
@@ -88,6 +114,14 @@ function providerReasoning(reasoning: ReasoningConfig): OpenRouterProviderOption
     ? { max_tokens: reasoning.maxTokens }
     : { effort: reasoning.effort };
 }
+
+// `exclude` only controls returned reasoning. `enabled: false` and effort none
+// tell OpenRouter/providers not to spend tokens on it in retry/corrective calls.
+const DISABLED_PROVIDER_REASONING: OpenRouterProviderOptions["reasoning"] = {
+  enabled: false,
+  exclude: true,
+  effort: "none",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -105,7 +139,7 @@ function costFrom(metadata: ProviderMetadata | undefined): number | undefined {
 function traceUsage(
   usage: LanguageModelUsage | undefined,
   providerMetadata: ProviderMetadata | undefined,
-): Extract<StreamEvent, { type: "trace.completed" }>["usage"] | undefined {
+): Omit<NonNullable<TraceEvent["usage"]>, "totalMs" | "firstTokenMs"> | undefined {
   if (!usage) return undefined;
   const costUsd = costFrom(providerMetadata);
   return {
@@ -120,24 +154,45 @@ function traceUsage(
 
 function combinedTraceUsage(
   generations: readonly GenerationResult[],
-): Extract<StreamEvent, { type: "trace.completed" }>["usage"] | undefined {
+  totalMs: number,
+): NonNullable<TraceEvent["usage"]> {
   const usages = generations
     .map((generated) => traceUsage(generated.usage, generated.providerMetadata))
     .filter((usage) => usage !== undefined);
-  if (usages.length === 0) return undefined;
-
   const reasoningTokens = usages.some((usage) => usage.reasoningTokens !== undefined)
     ? usages.reduce((sum, usage) => sum + (usage.reasoningTokens ?? 0), 0)
     : undefined;
   const costUsd = usages.some((usage) => usage.costUsd !== undefined)
     ? usages.reduce((sum, usage) => sum + (usage.costUsd ?? 0), 0)
     : undefined;
+  const firstTokenMs = generations.reduce<number | null>((first, generated) => {
+    if (generated.firstTokenMs === null) return first;
+    const observed = generated.startedAfterMs + generated.firstTokenMs;
+    return first === null ? observed : Math.min(first, observed);
+  }, null);
   return {
     inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
     outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0),
     ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
     ...(costUsd === undefined ? {} : { costUsd }),
+    totalMs,
+    firstTokenMs,
   };
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function hasUsableText(value: string): boolean {
+  return /[\p{L}\p{N}]/u.test(value);
+}
+
+function hasUsableFinalText(value: string, fieldCount: number): boolean {
+  const missing = "quiparena missing answer marker";
+  return parseFinalAnswers(value, { fallback: missing })
+    .slice(0, fieldCount)
+    .every((answer) => answer !== missing);
 }
 
 function characters(value: string): string[] {
@@ -161,6 +216,9 @@ export class ModelPlayer implements Player {
   private readonly reasoning: ReasoningConfig | null;
   private readonly temperature: number | undefined;
   private readonly safetyMarginMs: number;
+  private readonly fastRetryBudgetMs: number;
+  private readonly voteFastRetryBudgetMs: number;
+  private readonly answerLimit: number;
   private readonly fallback: string;
   private readonly sink: EventSink | undefined;
   private readonly logger: ModelPlayerLogger;
@@ -179,9 +237,20 @@ export class ModelPlayer implements Player {
     if (config.safetyMarginMs !== undefined && (!Number.isFinite(config.safetyMarginMs) || config.safetyMarginMs < 0)) {
       throw new RangeError("Safety margin must be a non-negative number");
     }
-    if (config.reasoning && "maxTokens" in config.reasoning
-      && (!Number.isInteger(config.reasoning.maxTokens) || config.reasoning.maxTokens < 1)) {
-      throw new RangeError("Reasoning token budget must be a positive integer");
+    if (config.reasoning && "maxTokens" in config.reasoning) {
+      const budgets = [
+        config.reasoning.maxTokens,
+        config.reasoning.voteMaxTokens,
+        config.reasoning.thriplashMaxTokens,
+      ].filter((budget) => budget !== undefined);
+      if (budgets.some((budget) => !Number.isInteger(budget) || budget < 1)) {
+        throw new RangeError("Reasoning token budgets must be positive integers");
+      }
+    }
+    for (const budget of [config.fastRetryBudgetMs, config.voteFastRetryBudgetMs]) {
+      if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
+        throw new RangeError("Fast retry budgets must be non-negative numbers");
+      }
     }
     if (config.answerLimit !== undefined
       && (!Number.isInteger(config.answerLimit) || config.answerLimit < 1)) {
@@ -194,6 +263,9 @@ export class ModelPlayer implements Player {
     this.reasoning = config.reasoning ?? null;
     this.temperature = config.temperature;
     this.safetyMarginMs = config.safetyMarginMs ?? DEFAULT_SAFETY_MARGIN_MS;
+    this.fastRetryBudgetMs = config.fastRetryBudgetMs ?? DEFAULT_FAST_RETRY_BUDGET_MS.answer;
+    this.voteFastRetryBudgetMs = config.voteFastRetryBudgetMs ?? DEFAULT_FAST_RETRY_BUDGET_MS.vote;
+    this.answerLimit = config.answerLimit ?? DEFAULT_ANSWER_LIMIT;
     this.fallback = sanitizeAnswer(config.fallback ?? DEFAULT_FALLBACK);
     this.sink = config.sink;
     this.logger = config.logger ?? DEFAULT_LOGGER;
@@ -213,6 +285,7 @@ export class ModelPlayer implements Player {
   }
 
   async answer(prompt: string, ctx: PlayerContext): Promise<string> {
+    const startedAt = performance.now();
     const maxLength = this.contextMaxLength(ctx);
     const request = [
       `Prompt: ${prompt}`,
@@ -221,30 +294,45 @@ export class ModelPlayer implements Player {
     ].join("\n");
     const messages: ModelMessage[] = [{ role: "user", content: this.withFeedback(request, ctx) }];
     const generations: GenerationResult[] = [];
-    const attempts: TraceAttempt[] = [];
 
-    let generated = await this.generate(messages, ctx, 128);
-    generations.push(generated);
+    let generated = await this.generateInitial(
+      messages,
+      ctx,
+      "answer",
+      128,
+      generations,
+      startedAt,
+      hasUsableText,
+    );
     let answer = sanitizeAnswer(generated.text, { fallback: this.fallback });
     for (let reasks = 0; reasks < 2 && characterLength(answer) > maxLength; reasks += 1) {
       if (!this.canReask(ctx)) break;
       const reason = `That is ${characterLength(answer)} characters; the limit is ${maxLength}. Rewrite it so it fits, keep the joke.`;
-      attempts.push({ text: answer, reason });
       messages.push(
         { role: "assistant", content: generated.text },
         { role: "user", content: reason },
       );
-      generated = await this.generate(messages, ctx, 128);
+      generated = await this.generate(messages, ctx, {
+        answerTokens: FAST_OUTPUT_TOKENS.answer,
+        abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
+        kind: "corrective",
+        purpose: "answer",
+        reasoningEnabled: false,
+        traceStartedAt: startedAt,
+        correction: { text: answer, reason },
+      });
       generations.push(generated);
+      if (!hasUsableText(generated.text)) break;
       answer = sanitizeAnswer(generated.text, { fallback: this.fallback });
     }
 
     if (characterLength(answer) > maxLength) answer = truncateToLimit(answer, maxLength);
-    this.emitTrace(prompt, answer, generations, ctx, attempts);
+    this.emitTrace(prompt, answer, generations, ctx, startedAt);
     return answer;
   }
 
   async answerFinal(prompt: string, ctx: PlayerContext): Promise<[string, string, string]> {
+    const startedAt = performance.now();
     const maxLength = this.contextMaxLength(ctx);
     const fieldCount = Number.isInteger(ctx.fieldCount) && (ctx.fieldCount ?? 0) > 0
       ? Math.min(3, ctx.fieldCount ?? 3)
@@ -256,10 +344,16 @@ export class ModelPlayer implements Player {
     ].join("\n");
     const messages: ModelMessage[] = [{ role: "user", content: this.withFeedback(request, ctx) }];
     const generations: GenerationResult[] = [];
-    const attempts: TraceAttempt[] = [];
 
-    let generated = await this.generate(messages, ctx, 256);
-    generations.push(generated);
+    let generated = await this.generateInitial(
+      messages,
+      ctx,
+      "thriplash",
+      256,
+      generations,
+      startedAt,
+      (text) => hasUsableFinalText(text, fieldCount),
+    );
     const answers = parseFinalAnswers(generated.text, { fallback: this.fallback });
     for (let reasks = 0; reasks < 2; reasks += 1) {
       const overLimit = answers
@@ -275,13 +369,21 @@ export class ModelPlayer implements Player {
         `Rewrite only ${overLimit.length === 1 ? `line ${indices}` : `lines ${indices}`} so ${overLimit.length === 1 ? "it fits" : "they fit"}, keeping the jokes.`,
         `Return only ${overLimit.length === 1 ? "the replacement line" : `${overLimit.length} replacement lines in that order`} with no numbering or other text.`,
       ].join(" ");
-      attempts.push({ text: overLimit.map((line) => line.answer).join("\n"), reason });
       messages.push(
         { role: "assistant", content: generated.text },
         { role: "user", content: reason },
       );
-      generated = await this.generate(messages, ctx, 256);
+      generated = await this.generate(messages, ctx, {
+        answerTokens: FAST_OUTPUT_TOKENS.thriplash,
+        abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
+        kind: "corrective",
+        purpose: "thriplash",
+        reasoningEnabled: false,
+        traceStartedAt: startedAt,
+        correction: { text: overLimit.map((line) => line.answer).join("\n"), reason },
+      });
       generations.push(generated);
+      if (!hasUsableFinalText(generated.text, overLimit.length)) break;
       const replacements = this.parseFinalReplacements(generated.text, overLimit.length);
       overLimit.forEach((line, index) => {
         answers[line.index] = replacements[index] ?? this.fallback;
@@ -291,15 +393,15 @@ export class ModelPlayer implements Player {
     answers.forEach((answer, index) => {
       if (characterLength(answer) > maxLength) answers[index] = truncateToLimit(answer, maxLength);
     });
-    this.emitTrace(prompt, answers.join("\n"), generations, ctx, attempts);
+    this.emitTrace(prompt, answers.join("\n"), generations, ctx, startedAt);
     return answers;
   }
 
   async vote(prompt: string, options: string[], ctx: PlayerContext): Promise<number> {
+    const startedAt = performance.now();
     if (options.length === 0) {
       this.logWarn(`[${this.modelId}] vote requested without options; choosing index 0`);
-      const generated: GenerationResult = { text: "", reasoning: "" };
-      this.emitTrace(prompt, "0", [generated], ctx);
+      this.emitTrace(prompt, "0", [], ctx, startedAt);
       return 0;
     }
 
@@ -312,10 +414,15 @@ export class ModelPlayer implements Player {
       listed,
       "Return one letter or number only.",
     ].join("\n");
-    const generated = await this.generate(
+    const generations: GenerationResult[] = [];
+    const generated = await this.generateInitial(
       [{ role: "user", content: this.withFeedback(request, ctx) }],
       ctx,
+      "vote",
       16,
+      generations,
+      startedAt,
+      (text) => parseVote(text, options.length) !== undefined,
     );
     let choice = parseVote(generated.text, options.length);
     if (choice === undefined) {
@@ -324,32 +431,73 @@ export class ModelPlayer implements Player {
         `[${this.modelId}] could not parse vote ${JSON.stringify(generated.text)}; randomly chose ${choice}`,
       );
     }
-    this.emitTrace(prompt, String(choice), [generated], ctx);
+    this.emitTrace(prompt, String(choice), generations, ctx, startedAt);
     return choice;
+  }
+
+  private async generateInitial(
+    messages: ModelMessage[],
+    ctx: PlayerContext,
+    purpose: GenerationPurpose,
+    answerTokens: number,
+    generations: GenerationResult[],
+    traceStartedAt: number,
+    isUsable: (text: string) => boolean,
+  ): Promise<GenerationResult> {
+    const retryBudgetMs = purpose === "vote" ? this.voteFastRetryBudgetMs : this.fastRetryBudgetMs;
+    const primary = await this.generate(messages, ctx, {
+      answerTokens,
+      abortAtMs: ctx.deadlineMs - this.safetyMarginMs - retryBudgetMs,
+      kind: "primary",
+      purpose,
+      reasoningEnabled: true,
+      traceStartedAt,
+    });
+    generations.push(primary);
+    if (isUsable(primary.text)) return primary;
+
+    const fast = await this.generate(messages, ctx, {
+      answerTokens: FAST_OUTPUT_TOKENS[purpose],
+      abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
+      kind: "fast",
+      purpose,
+      reasoningEnabled: false,
+      traceStartedAt,
+    });
+    generations.push(fast);
+    return fast;
   }
 
   private async generate(
     messages: ModelMessage[],
     ctx: PlayerContext,
-    answerTokens: number,
+    options: {
+      answerTokens: number;
+      abortAtMs: number;
+      kind: AttemptKind;
+      purpose: GenerationPurpose;
+      reasoningEnabled: boolean;
+      traceStartedAt: number;
+      correction?: { text: string; reason: string };
+    },
   ): Promise<GenerationResult> {
+    const startedAt = performance.now();
     const controller = new AbortController();
-    const abortAfterMs = Math.max(0, ctx.deadlineMs - Date.now() - this.safetyMarginMs);
-    const timer = setTimeout(() => {
-      controller.abort(new Error("QuipArena player deadline reached"));
-    }, abortAfterMs);
+    const abortAfterMs = options.abortAtMs - Date.now();
+    const abort = () => controller.abort(new Error(`QuipArena ${options.kind} attempt budget reached`));
+    const timer = abortAfterMs <= 0 ? undefined : setTimeout(abort, abortAfterMs);
+    if (abortAfterMs <= 0) abort();
 
     let text = "";
-    let reasoning = "";
+    let reasoningText = "";
     let usage: LanguageModelUsage | undefined;
     let providerMetadata: ProviderMetadata | undefined;
-    // Reasoning tokens count against the output cap on most providers, so a
-    // reasoning-enabled player needs headroom. The deadline is the real budget.
-    const maxOutputTokens = this.reasoning === null
-      ? answerTokens
-      : "maxTokens" in this.reasoning
-        ? this.reasoning.maxTokens + answerTokens
-        : REASONING_HEADROOM_TOKENS + answerTokens;
+    let firstTokenMs: number | null = null;
+    let aborted = controller.signal.aborted;
+    const configuredReasoning = options.reasoningEnabled ? this.reasoningFor(options.purpose) : null;
+    const maxOutputTokens = options.answerTokens + (configuredReasoning === null
+      ? 0
+      : this.reasoningBudget(options.purpose));
 
     try {
       const result = streamText({
@@ -359,23 +507,30 @@ export class ModelPlayer implements Player {
         maxOutputTokens,
         maxRetries: 0,
         abortSignal: controller.signal,
+        onError: () => undefined,
         ...(this.temperature === undefined ? {} : { temperature: this.temperature }),
-        ...(this.reasoning === null
-          ? {}
-          : {
-              providerOptions: {
-                openrouter: { reasoning: providerReasoning(this.reasoning) },
-              },
-            }),
+        ...(!options.reasoningEnabled
+          ? this.reasoning === null
+            ? {}
+            : { providerOptions: { openrouter: { reasoning: DISABLED_PROVIDER_REASONING } } }
+          : configuredReasoning === null
+            ? {}
+            : {
+                providerOptions: {
+                  openrouter: { reasoning: providerReasoning(configuredReasoning) },
+                },
+              }),
       });
 
       for await (const part of result.stream) {
         switch (part.type) {
           case "reasoning-delta":
-            reasoning += part.text;
+            if (firstTokenMs === null && part.text) firstTokenMs = elapsedMs(startedAt);
+            reasoningText += part.text;
             this.callHook(ctx.onThinking, part.text, "thinking");
             break;
           case "text-delta":
+            if (firstTokenMs === null && part.text) firstTokenMs = elapsedMs(startedAt);
             text += part.text;
             this.callHook(ctx.onDraft, part.text, "draft");
             break;
@@ -387,23 +542,33 @@ export class ModelPlayer implements Player {
             this.logError(`[${this.modelId}] model stream error`, part.error);
             this.reportFailure(part.error, ctx);
             break;
+          case "abort":
+            aborted = true;
+            break;
         }
       }
     } catch (error) {
       if (controller.signal.aborted) {
-        this.logWarn(`[${this.modelId}] generation stopped at the deadline`);
+        aborted = true;
+        this.logWarn(`[${this.modelId}] ${options.kind} generation stopped at its time budget`);
         this.reportFailure(new Error("Model generation timed out"), ctx);
       } else {
         this.logError(`[${this.modelId}] generation failed`, error);
         this.reportFailure(error, ctx);
       }
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
 
     return {
-      text: text || this.fallback,
-      reasoning,
+      text,
+      reasoning: reasoningText,
+      kind: options.kind,
+      ms: elapsedMs(startedAt),
+      firstTokenMs,
+      startedAfterMs: Math.max(0, Math.round(startedAt - options.traceStartedAt)),
+      aborted,
+      ...(options.correction === undefined ? {} : { correction: options.correction }),
       ...(usage === undefined ? {} : { usage }),
       ...(providerMetadata === undefined ? {} : { providerMetadata }),
     };
@@ -423,10 +588,17 @@ export class ModelPlayer implements Player {
     answer: string,
     generations: readonly GenerationResult[],
     ctx: PlayerContext,
-    attempts: readonly TraceAttempt[] = [],
+    startedAt: number,
   ): void {
     if (!this.sink) return;
-    const usage = combinedTraceUsage(generations);
+    const attempts: TraceAttempt[] = generations.map((generated) => ({
+      kind: generated.kind,
+      ms: generated.ms,
+      firstTokenMs: generated.firstTokenMs,
+      reasoningTokens: generated.usage?.outputTokenDetails.reasoningTokens ?? 0,
+      aborted: generated.aborted,
+      ...(generated.correction ?? {}),
+    }));
     const event: StreamEvent = {
       type: "trace.completed",
       gameId: ctx.gameId,
@@ -434,8 +606,8 @@ export class ModelPlayer implements Player {
       prompt,
       reasoning: generations.map((generated) => generated.reasoning).filter(Boolean).join("\n\n"),
       answer,
-      ...(attempts.length === 0 ? {} : { attempts: [...attempts] }),
-      ...(usage === undefined ? {} : { usage }),
+      attempts,
+      usage: combinedTraceUsage(generations, elapsedMs(startedAt)),
       at: new Date().toISOString(),
     };
 
@@ -450,8 +622,8 @@ export class ModelPlayer implements Player {
 
   private contextMaxLength(ctx: PlayerContext): number {
     if (Number.isInteger(ctx.maxLength) && ctx.maxLength > 0) return ctx.maxLength;
-    this.logWarn(`[${this.modelId}] invalid context maxLength; using ${DEFAULT_ANSWER_LIMIT}`);
-    return DEFAULT_ANSWER_LIMIT;
+    this.logWarn(`[${this.modelId}] invalid context maxLength; using ${this.answerLimit}`);
+    return this.answerLimit;
   }
 
   private withFeedback(request: string, ctx: PlayerContext): string {
@@ -460,6 +632,26 @@ export class ModelPlayer implements Player {
 
   private canReask(ctx: PlayerContext): boolean {
     return Date.now() < ctx.deadlineMs - this.safetyMarginMs;
+  }
+
+  private reasoningFor(purpose: GenerationPurpose): ReasoningConfig | null {
+    if (this.reasoning === null || "effort" in this.reasoning) return this.reasoning;
+    switch (purpose) {
+      case "answer":
+        return { maxTokens: this.reasoning.maxTokens };
+      case "vote":
+        return { maxTokens: this.reasoning.voteMaxTokens ?? DEFAULT_REASONING_TOKENS.vote };
+      case "thriplash":
+        return {
+          maxTokens: this.reasoning.thriplashMaxTokens ?? DEFAULT_REASONING_TOKENS.thriplash,
+        };
+    }
+  }
+
+  private reasoningBudget(purpose: GenerationPurpose): number {
+    const reasoning = this.reasoningFor(purpose);
+    if (reasoning !== null && "maxTokens" in reasoning) return reasoning.maxTokens;
+    return DEFAULT_REASONING_TOKENS[purpose];
   }
 
   private parseFinalReplacements(value: string, count: number): string[] {

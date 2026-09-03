@@ -4,7 +4,11 @@ import { z } from "zod";
 
 const reasoningSchema = z.union([
   z.object({ effort: z.enum(["xhigh", "high", "medium", "low", "minimal", "none"]) }).strict(),
-  z.object({ maxTokens: z.number().int().positive() }).strict(),
+  z.object({
+    maxTokens: z.number().int().positive(),
+    voteMaxTokens: z.number().int().positive().optional(),
+    thriplashMaxTokens: z.number().int().positive().optional(),
+  }).strict(),
 ]);
 
 const rosterModelSchema = z.object({
@@ -15,6 +19,7 @@ const rosterModelSchema = z.object({
   reasoning: reasoningSchema.nullable(),
   temperature: z.number().min(0).max(2).nullable(),
   enabled: z.boolean(),
+  disabledReason: z.string().min(1).optional(),
   rationale: z.string().min(1),
 }).strict();
 
@@ -26,6 +31,13 @@ const rosterSchema = z.object({
   const seenSlugs = new Set<string>();
   const seenNames = new Set<string>();
   roster.models.forEach((model, index) => {
+    if (!model.enabled && model.disabledReason === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Disabled models must include disabledReason",
+        path: ["models", index, "disabledReason"],
+      });
+    }
     if (seenSlugs.has(model.slug)) {
       ctx.addIssue({ code: "custom", message: `Duplicate slug: ${model.slug}`, path: ["models", index, "slug"] });
     }
