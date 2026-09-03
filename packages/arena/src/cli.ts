@@ -10,6 +10,7 @@ import { desc } from "drizzle-orm";
 
 import { openDb, type ArenaDatabase } from "./db/client.js";
 import { games } from "./db/schema.js";
+import { runHostAgent } from "./host-agent/host-agent.js";
 import { ConsoleSink, ModelPlayer, type ModelPlayerConfig } from "./model-player.js";
 import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js";
 import { loadGame } from "./recorder.js";
@@ -34,6 +35,7 @@ function usage(): string {
     "  quiparena games show <id>",
     "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--record DIR] [--db] [--ingest URL]",
     "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL]",
+    "  quiparena host-agent --room-file PATH [--interval-s 15] [--once] [--image PATH]",
     "  quiparena dry-run [--players 8]",
     "",
     "From the workspace:",
@@ -504,6 +506,46 @@ async function runWorkerLoop(args: string[]): Promise<void> {
   }
 }
 
+async function runHostAgentCommand(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      "room-file": { type: "string" },
+      "interval-s": { type: "string" },
+      once: { type: "boolean" },
+      image: { type: "string" },
+    },
+    strict: true,
+  });
+  const roomFile = required(values["room-file"], "--room-file");
+  const intervalS = values["interval-s"] === undefined ? undefined : Number(values["interval-s"]);
+  if (intervalS !== undefined && (!Number.isFinite(intervalS) || intervalS <= 0)) {
+    throw new Error("--interval-s must be a positive number");
+  }
+  if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
+
+  const signal = workerSignal();
+  try {
+    const result = await runHostAgent({
+      roomFile,
+      signal: signal.signal,
+      ...(intervalS === undefined ? {} : { intervalS }),
+      ...(values.once === undefined ? {} : { once: values.once }),
+      ...(values.image === undefined ? {} : { image: values.image }),
+    });
+    if (values.once) {
+      console.log(JSON.stringify({
+        code: result.code,
+        confirmed: result.confirmed,
+        screenState: result.screenState,
+      }));
+      if (!result.confirmed) process.exitCode = 1;
+    }
+  } finally {
+    signal.dispose();
+  }
+}
+
 function scriptedRoster(count: number): RosterModel[] {
   return Array.from({ length: count }, (_, index) => ({
     slug: `scripted/player-${index + 1}`,
@@ -588,6 +630,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     case "loop":
       await runWorkerLoop(args);
+      break;
+    case "host-agent":
+      await runHostAgentCommand(args);
       break;
     case "dry-run":
       await runDryRun(args);
