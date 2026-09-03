@@ -20,3 +20,4 @@ Things noticed while building that are not blocking. Newest first.
 - Audience vote capture remains pinned. Manual final-score screen reading is an
   audit channel, not audience vote ingestion.
 - Legacy Python bot in `legacy/quipbot` is reference-only and untested against today's jackbox.tv.
+- `pnpm ops up` starts the web process in development mode (server only), so the site shows "QuipArena client is served by Vite in development" until Vite is started by hand. ops should run the web with `NODE_ENV=production` serving `dist/client`, or start Vite alongside. Found 2026-09-03.
