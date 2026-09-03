@@ -38,9 +38,13 @@ export interface ReplaySeatReport {
 
 export interface ReplayRecordingOptions {
   player?: Player;
+  /** Virtual latency added to every Player answer/vote result. */
+  playerDelayMs?: number;
   gameId?: string;
   roomCode?: string;
 }
+
+export type ReplayDirectoryOptions = Omit<ReplayRecordingOptions, "player">;
 
 interface RecordingRow {
   t: number;
@@ -69,6 +73,10 @@ export async function replayRecording(
   path: string,
   options: ReplayRecordingOptions = {},
 ): Promise<ReplaySeatReport> {
+  const playerDelayMs = options.playerDelayMs ?? 0;
+  if (!Number.isFinite(playerDelayMs) || playerDelayMs < 0) {
+    throw new RangeError("playerDelayMs must be a non-negative number");
+  }
   const rows = await readRows(path);
   const welcomeFrame = findWelcome(rows);
   const welcome = asRecord(welcomeFrame.result);
@@ -77,7 +85,11 @@ export async function replayRecording(
   }
 
   const seatName = welcome.name;
-  const player = options.player ?? new ScriptedPlayer(seatName, { voteOffset: welcome.id - 2 });
+  const replayClock = playerDelayMs > 0 ? new ReplayClock(welcomeRow(rows).t) : undefined;
+  const sourcePlayer = options.player ?? new ScriptedPlayer(seatName, { voteOffset: welcome.id - 2 });
+  const player = replayClock
+    ? delayedPlayer(sourcePlayer, playerDelayMs, replayClock)
+    : sourcePlayer;
   const events: AnyEvent[] = [];
   const tracker = new OccurrenceTracker(welcome.id);
   tracker.observeWelcome(welcome);
@@ -149,9 +161,22 @@ export async function replayRecording(
     const firstWelcomeIndex = rows.findIndex((row) => row.dir === "in"
       && parseFrame(row.data, path).opcode === "client/welcome");
     for (const [index, row] of rows.entries()) {
-      if (index <= firstWelcomeIndex || row.dir !== "in") continue;
+      if (index <= firstWelcomeIndex) continue;
       const frame = parseFrame(row.data, path);
+      // Recorded outbound gameplay rows are causal barriers: later inbound
+      // completion/projection frames were produced by that action. Release the
+      // virtual Player delay here so fast-forwarding cannot invert that order.
+      if (replayClock && row.dir === "out" && gameplayActionState(frame, tracker.active?.state)) {
+        replayClock.releaseNextDelay();
+        await settleTransport();
+      }
+      if (row.dir !== "in") continue;
       if (typeof frame.re === "number" || frame.opcode === "room/exit") continue;
+
+      if (replayClock) {
+        replayClock.advanceTo(row.t);
+        await settleTransport();
+      }
 
       tracker.observeFrame(frame);
       activeOccurrence = tracker.active;
@@ -162,6 +187,15 @@ export async function replayRecording(
       const observed = waitForRaw(connection, frame);
       socket.send(row.data);
       await observed;
+      if (replayClock) {
+        await settleTransport();
+      } else {
+        await seat.waitForIdle();
+      }
+    }
+    if (replayClock) {
+      replayClock.flush();
+      await settleTransport();
       await seat.waitForIdle();
     }
   } finally {
@@ -191,15 +225,73 @@ export async function replayRecording(
 }
 
 /** Replay every `*.jsonl` seat recording in a directory, never other files. */
-export async function replayDirectory(dir: string): Promise<ReplaySeatReport[]> {
+export async function replayDirectory(
+  dir: string,
+  options: ReplayDirectoryOptions = {},
+): Promise<ReplaySeatReport[]> {
   const files = (await readdir(dir, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map((entry) => entry.name)
     .sort(numericSort);
   if (files.length === 0) throw new Error(`Replay directory ${dir} contains no JSONL recordings`);
-  const reports: ReplaySeatReport[] = [];
-  for (const file of files) reports.push(await replayRecording(join(dir, file)));
-  return reports;
+  return await Promise.all(files.map(async (file) => replayRecording(join(dir, file), options)));
+}
+
+class ReplayClock {
+  #now: number;
+  #delays: Array<{ dueAt: number; resolve: () => void }> = [];
+  #flushed = false;
+
+  constructor(now: number) {
+    this.#now = now;
+  }
+
+  delay(ms: number): Promise<void> {
+    if (ms <= 0 || this.#flushed) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.#delays.push({ dueAt: this.#now + ms, resolve });
+      this.#delays.sort((left, right) => left.dueAt - right.dueAt);
+    });
+  }
+
+  advanceTo(now: number): void {
+    this.#now = Math.max(this.#now, now);
+    this.#resolveDue();
+  }
+
+  releaseNextDelay(): void {
+    const next = this.#delays[0];
+    if (!next) return;
+    this.#now = Math.max(this.#now, next.dueAt);
+    this.#resolveDue();
+  }
+
+  flush(): void {
+    this.#flushed = true;
+    this.#now = Number.POSITIVE_INFINITY;
+    this.#resolveDue();
+  }
+
+  #resolveDue(): void {
+    while (this.#delays[0] && this.#delays[0].dueAt <= this.#now) {
+      this.#delays.shift()?.resolve();
+    }
+  }
+}
+
+function delayedPlayer(player: Player, delayMs: number, clock: ReplayClock): Player {
+  const resolveAfterDelay = async <T>(work: () => Promise<T>): Promise<T> => {
+    const value = await work();
+    await clock.delay(delayMs);
+    return value;
+  };
+  return {
+    name: player.name,
+    modelId: player.modelId,
+    answer: (prompt, context) => resolveAfterDelay(() => player.answer(prompt, context)),
+    answerFinal: (prompt, context) => resolveAfterDelay(() => player.answerFinal(prompt, context)),
+    vote: (prompt, choices, context) => resolveAfterDelay(() => player.vote(prompt, choices, context)),
+  };
 }
 
 class OccurrenceTracker {
@@ -319,10 +411,14 @@ async function readRows(path: string): Promise<RecordingRow[]> {
 }
 
 function findWelcome(rows: readonly RecordingRow[]): EcastFrame {
+  return parseFrame(welcomeRow(rows).data, "recording");
+}
+
+function welcomeRow(rows: readonly RecordingRow[]): RecordingRow {
   for (const row of rows) {
     if (row.dir !== "in") continue;
     const frame = parseFrame(row.data, "recording");
-    if (frame.opcode === "client/welcome") return frame;
+    if (frame.opcode === "client/welcome") return row;
   }
   throw new Error("Recording has no inbound client/welcome frame");
 }
@@ -429,4 +525,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function closeServer(server: WebSocketServer): Promise<void> {
   for (const socket of server.clients) socket.terminate();
   await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function settleTransport(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }

@@ -19,7 +19,7 @@ function usage(): never {
     "  pnpm --filter @quiparena/jackbox lookup --room CODE",
     "  pnpm --filter @quiparena/jackbox play --room CODE --players N [--record DIR] [--credentials FILE]",
     "  pnpm --filter @quiparena/jackbox reconnect --credentials FILE",
-    "  pnpm --filter @quiparena/jackbox replay --dir DIR",
+    "  pnpm --filter @quiparena/jackbox replay --dir DIR [--player-delay-ms N]",
   ].join("\n"));
   process.exit(2);
 }
@@ -169,11 +169,18 @@ async function reconnectCommand(args: string[]): Promise<void> {
 async function replayCommand(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
-    options: { dir: { type: "string" } },
+    options: {
+      dir: { type: "string" },
+      "player-delay-ms": { type: "string" },
+    },
     strict: true,
   });
   if (!values.dir) usage();
-  const reports = await replayDirectory(resolveOptionPath(values.dir));
+  const playerDelayMs = Number(values["player-delay-ms"] ?? 0);
+  if (!Number.isFinite(playerDelayMs) || playerDelayMs < 0) {
+    throw new RangeError("--player-delay-ms must be a non-negative number");
+  }
+  const reports = await replayDirectory(resolveOptionPath(values.dir), { playerDelayMs });
   for (const report of reports) {
     console.log([
       report.seat,

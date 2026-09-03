@@ -431,9 +431,160 @@ describe("Quiplash3Seat", () => {
       state: "Lobby",
       nextState: "EnterSingleText",
       durationMs: expect.any(Number),
+      missedOccurrences: 0,
     }));
     expect(requests.filter((request) => request.opcode === "client/send").map(body))
       .not.toContainEqual(expect.objectContaining({ action: "add" }));
+  });
+
+  it("starts a new occurrence while the superseded Player call is still pending", async () => {
+    const welcome = await recordedWelcome();
+    const requests: ClientFrame[] = [];
+    let client: WebSocket | undefined;
+    let pc = 3750;
+    const { server, baseUrl } = await mockServer((socket) => {
+      client = socket;
+      socket.send(JSON.stringify(welcome));
+      socket.on("message", (data) => {
+        const request = JSON.parse(data.toString()) as ClientFrame;
+        requests.push(request);
+        socket.send(JSON.stringify({ pc: pc++, re: request.seq, opcode: "ok", result: {} }));
+      });
+    });
+    servers.push(server);
+
+    let resolveFirstVote!: (choice: number) => void;
+    const firstVote = new Promise<number>((resolve) => {
+      resolveFirstVote = resolve;
+    });
+    const player: Player = {
+      name: "REC1",
+      modelId: null,
+      answer: async () => "unused",
+      answerFinal: async () => ["unused", "unused", "unused"],
+      vote: vi.fn()
+        .mockImplementationOnce(async () => await firstVote)
+        .mockResolvedValue(1),
+    };
+    const events: AnyEvent[] = [];
+    const connection = makeConnection(baseUrl);
+    connections.push(connection);
+    const seat = new Quiplash3Seat(connection, player, {
+      gameId: "superseded-occurrence",
+      defaultVoteTimeoutMs: 1_000,
+      timerSafetyMs: 0,
+      onEvent: (event) => events.push(event),
+      log: () => undefined,
+    });
+    await seat.connect();
+    if (!client) throw new Error("Mock client was not connected");
+
+    const first = {
+      state: "MakeSingleChoice",
+      choiceId: "ChoseQuip",
+      prompt: { text: "First matchup" },
+      choices: [{ key: "first-a", text: "A" }, { key: "first-b", text: "B" }],
+      chosen: null,
+    };
+    const second = {
+      state: "MakeSingleChoice",
+      choiceId: "ChoseQuip",
+      prompt: { text: "Second matchup" },
+      choices: [{ key: "second-a", text: "C" }, { key: "second-b", text: "D" }],
+      chosen: null,
+    };
+    sendEntity(client, pc++, 8, first);
+    await waitFor(() => vi.mocked(player.vote).mock.calls.length === 1);
+    sendEntity(client, pc++, 9, second);
+
+    await waitFor(() => vi.mocked(player.vote).mock.calls.length === 2);
+    await waitFor(() => requests.filter((request) => body(request).action === "choose").length === 1);
+    expect(requests.find((request) => body(request).action === "choose")).toMatchObject({
+      params: { body: { choice: "second-b" } },
+    });
+
+    resolveFirstVote(0);
+    await seat.waitForIdle();
+    expect(requests.filter((request) => body(request).action === "choose")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "vote.requested")).toHaveLength(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness.error",
+      reason: "superseded",
+      missedOccurrences: 1,
+    }));
+
+    sendEntity(client, pc++, 10, { state: "Logo" });
+    sendEntity(client, pc++, 11, second);
+    await waitFor(() => requests.filter((request) => body(request).action === "choose").length === 2);
+    expect(vi.mocked(player.vote)).toHaveBeenCalledTimes(3);
+  });
+
+  it("watchdogs an actionable occurrence whose first submission failed", async () => {
+    const welcome = await recordedWelcome();
+    const requests: ClientFrame[] = [];
+    const logs: Array<{ message: string; raw?: unknown }> = [];
+    let client: WebSocket | undefined;
+    let pc = 3900;
+    let rejectChoice = true;
+    const { server, baseUrl } = await mockServer((socket) => {
+      client = socket;
+      socket.send(JSON.stringify(welcome));
+      socket.on("message", (data) => {
+        const request = JSON.parse(data.toString()) as ClientFrame;
+        requests.push(request);
+        if (body(request).action === "choose" && rejectChoice) {
+          rejectChoice = false;
+          socket.send(JSON.stringify({
+            pc: pc++,
+            re: request.seq,
+            opcode: "error",
+            result: { code: 409, msg: "try again" },
+          }));
+        } else {
+          socket.send(JSON.stringify({ pc: pc++, re: request.seq, opcode: "ok", result: {} }));
+        }
+      });
+    });
+    servers.push(server);
+    const player: Player = {
+      name: "REC1",
+      modelId: null,
+      answer: async () => "unused",
+      answerFinal: async () => ["unused", "unused", "unused"],
+      vote: vi.fn(async () => 0),
+    };
+    const events: AnyEvent[] = [];
+    const connection = makeConnection(baseUrl);
+    connections.push(connection);
+    const seat = new Quiplash3Seat(connection, player, {
+      gameId: "watchdog-game",
+      defaultVoteTimeoutMs: 1_000,
+      timerSafetyMs: 0,
+      watchdogGraceMs: 20,
+      onEvent: (event) => events.push(event),
+      log: (message, raw) => logs.push({ message, raw }),
+    });
+    await seat.connect();
+    if (!client) throw new Error("Mock client was not connected");
+
+    sendEntity(client, pc++, 8, {
+      state: "MakeSingleChoice",
+      choiceId: "watchdog-choice",
+      prompt: { text: "Retry this vote" },
+      choices: [{ key: "left", text: "Left" }, { key: "right", text: "Right" }],
+      chosen: null,
+    });
+
+    await waitFor(() => requests.filter((request) => body(request).action === "choose").length === 2);
+    expect(player.vote).toHaveBeenCalledTimes(2);
+    expect(seat.missedOccurrences).toBe(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness.error",
+      reason: "watchdog",
+      stateKey: expect.stringContaining("watchdog-choice"),
+      missedOccurrences: 1,
+    }));
+    expect(logs.some((entry) => entry.message.startsWith("HARNESS OCCURRENCE MISSED:"))).toBe(true);
   });
 
   it("sends the exact Same Players action from the VIP post-game lobby", async () => {

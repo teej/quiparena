@@ -13,6 +13,7 @@ export interface Quiplash3SeatOptions {
   defaultThriplashTimeoutMs?: number;
   defaultVoteTimeoutMs?: number;
   timerSafetyMs?: number;
+  watchdogGraceMs?: number;
   autoStart?: boolean;
   postGameAction?: PostGameAction;
   onEvent?: (event: AnyEvent) => void;
@@ -44,7 +45,13 @@ interface StateTiming {
 
 interface ActiveOccurrence {
   token: string;
+  state: "EnterSingleText" | "EnterTextList" | "MakeSingleChoice";
   handled: boolean;
+  actionSent: boolean;
+  playerCallInFlight: boolean;
+  cancelled: boolean;
+  missed: boolean;
+  watchdog: NodeJS.Timeout | undefined;
 }
 
 const DUPLICATE_ANSWER_FEEDBACK =
@@ -55,7 +62,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   readonly player: Player;
   readonly gameId: string;
 
-  #actions: Promise<void> = Promise.resolve();
+  #actions = new Set<Promise<void>>();
   #created = false;
   #started = false;
   #ended = false;
@@ -65,6 +72,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   #postGameAttempted = false;
   #cancelAttempted = false;
   #normalAnswerCount = 0;
+  #missedOccurrences = 0;
   #round?: RoundNumber;
   #entryOccurrence: ActiveOccurrence | undefined;
   #choiceOccurrence: ActiveOccurrence | undefined;
@@ -73,12 +81,16 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   #resolveEnded!: () => void;
   readonly #endedPromise: Promise<void>;
   readonly #options: Required<Pick<Quiplash3SeatOptions,
-    "defaultAnswerTimeoutMs" | "defaultThriplashTimeoutMs" | "defaultVoteTimeoutMs" | "timerSafetyMs" | "autoStart" | "postGameAction">>
+    "defaultAnswerTimeoutMs" | "defaultThriplashTimeoutMs" | "defaultVoteTimeoutMs" | "timerSafetyMs" | "watchdogGraceMs" | "autoStart" | "postGameAction">>
     & Pick<Quiplash3SeatOptions, "onEvent" | "log">;
   readonly #now: () => number;
 
   constructor(connection: EcastConnection, player: Player, options: Quiplash3SeatOptions) {
     super();
+    if (options.watchdogGraceMs !== undefined
+      && (!Number.isFinite(options.watchdogGraceMs) || options.watchdogGraceMs <= 0)) {
+      throw new RangeError("watchdogGraceMs must be a positive number");
+    }
     this.connection = connection;
     this.player = player;
     this.gameId = options.gameId;
@@ -88,6 +100,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       defaultThriplashTimeoutMs: options.defaultThriplashTimeoutMs ?? 60_000,
       defaultVoteTimeoutMs: options.defaultVoteTimeoutMs ?? 15_000,
       timerSafetyMs: options.timerSafetyMs ?? 750,
+      watchdogGraceMs: options.watchdogGraceMs ?? 3_000,
       autoStart: options.autoStart ?? false,
       postGameAction: options.postGameAction ?? "none",
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
@@ -100,11 +113,13 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     connection.on("welcome", (welcome) => {
       this.#observeWelcome(welcome);
       this.#observeStateTiming();
-      void this.#enqueueState();
+      this.#observeActionableOccurrence();
+      this.#dispatchState();
     });
     connection.on("entity", () => {
       this.#observeStateTiming();
-      void this.#enqueueState();
+      this.#observeActionableOccurrence();
+      this.#dispatchState();
     });
     connection.on("error", (error) => this.#reportError(error));
     connection.on("close", (code, reason) => {
@@ -130,17 +145,21 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     return isCancelStartable(this.#view().merged);
   }
 
+  get missedOccurrences(): number {
+    return this.#missedOccurrences;
+  }
+
   get hasAvatar(): boolean {
     return typeof asRecord(this.#view().merged.playerInfo)?.avatar === "string";
   }
 
   async connect(): Promise<EcastWelcome> {
-    const welcome = await this.connection.connect();
-    await this.#enqueueState();
-    return welcome;
+    return await this.connection.connect();
   }
 
   async close(): Promise<void> {
+    this.#leaveOccurrence("entry", "seat closed", false);
+    this.#leaveOccurrence("choice", "seat closed", false);
     await this.connection.close();
   }
 
@@ -149,8 +168,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   }
 
   /** Wait until all state updates observed so far have finished processing. */
-  waitForIdle(): Promise<void> {
-    return this.#actions;
+  async waitForIdle(): Promise<void> {
+    while (this.#actions.size > 0) await Promise.all([...this.#actions]);
   }
 
   async waitUntilCanStart(timeoutMs = 30_000): Promise<void> {
@@ -185,33 +204,25 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   }
 
   async startIfVip(): Promise<boolean> {
-    let started = false;
-    await this.#enqueue(async () => {
-      const raw = this.#view();
-      if (!isStartable(raw.merged)) return;
-      await this.#start(raw);
-      started = true;
-    });
-    return started;
+    const raw = this.#view();
+    if (!isStartable(raw.merged)) return false;
+    await this.#start(raw);
+    return true;
   }
 
   /** Send the controller's VIP start-countdown cancellation action when offered. */
   async cancelStartIfVip(): Promise<boolean> {
-    let cancelled = false;
-    await this.#enqueue(async () => {
-      const raw = this.#view();
-      if (!isCancelStartable(raw.merged) || this.#cancelAttempted) return;
-      this.#cancelAttempted = true;
-      try {
-        await this.connection.sendToHost({ action: "cancel" });
-        cancelled = true;
-      } catch (error) {
-        this.#cancelAttempted = false;
-        this.#logRaw("VIP start cancellation was rejected", raw, error);
-        throw error;
-      }
-    });
-    return cancelled;
+    const raw = this.#view();
+    if (!isCancelStartable(raw.merged) || this.#cancelAttempted) return false;
+    this.#cancelAttempted = true;
+    try {
+      await this.connection.sendToHost({ action: "cancel" });
+      return true;
+    } catch (error) {
+      this.#cancelAttempted = false;
+      this.#logRaw("VIP start cancellation was rejected", raw, error);
+      throw error;
+    }
   }
 
   #observeWelcome(welcome: EcastWelcome): void {
@@ -231,15 +242,56 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     });
   }
 
-  #enqueueState(): Promise<void> {
-    return this.#enqueue(() => this.#processState());
+  #dispatchState(): void {
+    const action = this.#processState()
+      .catch((error: unknown) => this.#reportError(asError(error)));
+    this.#actions.add(action);
+    void action.finally(() => this.#actions.delete(action));
   }
 
-  #enqueue(action: () => Promise<void> | void): Promise<void> {
-    this.#actions = this.#actions
-      .then(action)
-      .catch((error: unknown) => this.#reportError(asError(error)));
-    return this.#actions;
+  #observeActionableOccurrence(): void {
+    if (!this.connection.welcome) return;
+    const raw = this.#view();
+    const state = raw.merged;
+    // entryId/choiceId are layout-local and reused. The full token detects
+    // in-place prompt/cursor changes, while clearing the slot on every exit
+    // makes re-entry a fresh occurrence even when the token is identical.
+    switch (state.state) {
+      case "EnterSingleText":
+        this.#leaveOccurrence("choice", "left MakeSingleChoice");
+        if (Boolean(state.entry)) {
+          this.#leaveOccurrence("entry", "EnterSingleText completed");
+        } else if (extractPrompt(state.prompt)) {
+          this.#activateOccurrence("entry", "EnterSingleText", entryToken(state, raw.playerEntity));
+        }
+        break;
+      case "EnterTextList":
+        this.#leaveOccurrence("choice", "left MakeSingleChoice");
+        if (Boolean(state.entries)) {
+          this.#leaveOccurrence("entry", "EnterTextList completed");
+        } else if (extractPrompt(state.prompt)) {
+          this.#activateOccurrence("entry", "EnterTextList", entryToken(state, raw.playerEntity));
+        }
+        break;
+      case "MakeSingleChoice": {
+        this.#leaveOccurrence("entry", `left ${this.#entryOccurrence?.state ?? "entry state"}`);
+        const choices = projectChoices(state.choices);
+        if (state.chosen !== null && state.chosen !== undefined && state.chosen !== "") {
+          this.#leaveOccurrence("choice", "MakeSingleChoice completed");
+        } else if (extractPrompt(state.prompt) && choices.length > 0) {
+          this.#activateOccurrence(
+            "choice",
+            "MakeSingleChoice",
+            choiceToken(state, raw.playerEntity, choices),
+          );
+        }
+        break;
+      }
+      default:
+        this.#leaveOccurrence("entry", `left ${this.#entryOccurrence?.state ?? "entry state"}`);
+        this.#leaveOccurrence("choice", "left MakeSingleChoice");
+        break;
+    }
   }
 
   async #processState(): Promise<void> {
@@ -247,15 +299,6 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     if (!welcome) return;
     const raw = this.#view();
     const state = typeof raw.merged.state === "string" ? raw.merged.state : undefined;
-
-    // entryId and choiceId are layout-local cursor values, not globally unique
-    // state identifiers. The host reuses them across rounds and matchups, so an
-    // occurrence ends when its layout does (and can also advance in-place when
-    // its prompt/cursor changes).
-    if (state !== "EnterSingleText" && state !== "EnterTextList") {
-      this.#entryOccurrence = undefined;
-    }
-    if (state !== "MakeSingleChoice") this.#choiceOccurrence = undefined;
 
     if (!this.#started && (raw.merged.gameIsStarting === true || isRoundState(state))) {
       this.#started = true;
@@ -355,20 +398,19 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     // The official layout keeps the form open for every falsy entry. doneText
     // is presentation only and is deliberately not a completion signal.
     if (Boolean(state.entry)) {
-      this.#entryOccurrence = undefined;
+      this.#leaveOccurrence("entry", "EnterSingleText completed");
       return;
     }
     const prompt = extractPrompt(state.prompt);
     const token = entryToken(state, raw.playerEntity);
-    if (this.#entryOccurrence?.token !== token) {
-      this.#entryOccurrence = { token, handled: false };
-    }
-    if (this.#entryOccurrence.handled) return;
     if (!prompt) {
       this.#logRaw("EnterSingleText did not contain a usable prompt", raw);
       return;
     }
-    this.#entryOccurrence.handled = true;
+    const occurrence = this.#activateOccurrence("entry", "EnterSingleText", token);
+    if (occurrence.handled) return;
+    occurrence.handled = true;
+    occurrence.playerCallInFlight = true;
     this.#normalAnswerCount += 1;
 
     const round = this.#observeRound(inferRound(
@@ -397,8 +439,11 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       deadlineMs,
       "",
     );
+    occurrence.playerCallInFlight = false;
+    if (!this.#isCurrentOccurrence("entry", occurrence)) return;
     const answer = cleanLine(result.value, maxLength);
     try {
+      this.#markActionSent(occurrence);
       const submittedAnswer = await this.#submitSingleAnswer(
         state,
         answer,
@@ -408,7 +453,9 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         deadlineMs,
         maxLength,
         result.timedOut && offersSafetyQuip(state.actions),
+        occurrence,
       );
+      if (submittedAnswer === undefined) return;
       this.#emitEvent({
         type: "answer.submitted",
         gameId: this.gameId,
@@ -422,6 +469,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
+      this.#markActionFailed("entry", occurrence);
       this.#logRaw("Single-answer submission failed", raw, error);
       this.#reportError(asError(error));
     }
@@ -436,8 +484,10 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     deadlineMs: number,
     maxLength: number,
     useSafetyQuip: boolean,
-  ): Promise<string> {
+    occurrence: ActiveOccurrence,
+  ): Promise<string | undefined> {
     const textKey = typeof state.textKey === "string" && state.textKey ? state.textKey : undefined;
+    if (!this.#isCurrentOccurrence("entry", occurrence)) return undefined;
     if (useSafetyQuip) {
       if (textKey) await this.connection.request("text/update", { key: textKey, val: "⁇" });
       else await this.connection.sendToHost({ action: "safetyQuip" });
@@ -448,6 +498,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     let reasks = 0;
     let triedVariant = false;
     while (true) {
+      if (!this.#isCurrentOccurrence("entry", occurrence)) return undefined;
       try {
         if (textKey) await this.connection.request("text/update", { key: textKey, val: answer });
         else {
@@ -461,6 +512,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
 
         if (reasks < 2 && this.#now() < deadlineMs) {
           reasks += 1;
+          occurrence.playerCallInFlight = true;
           const revised = await this.#beforeDeadline(
             () => this.player.answer(prompt, this.#context(
               round,
@@ -473,6 +525,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
             deadlineMs,
             "",
           );
+          occurrence.playerCallInFlight = false;
+          if (!this.#isCurrentOccurrence("entry", occurrence)) return undefined;
           if (!revised.fallback) {
             answer = cleanLine(revised.value, maxLength);
             continue;
@@ -489,20 +543,19 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   async #handleThriplash(raw: StateView): Promise<void> {
     const state = raw.merged;
     if (Boolean(state.entries)) {
-      this.#entryOccurrence = undefined;
+      this.#leaveOccurrence("entry", "EnterTextList completed");
       return;
     }
     const prompt = extractPrompt(state.prompt);
     const token = entryToken(state, raw.playerEntity);
-    if (this.#entryOccurrence?.token !== token) {
-      this.#entryOccurrence = { token, handled: false };
-    }
-    if (this.#entryOccurrence.handled) return;
     if (!prompt) {
       this.#logRaw("EnterTextList did not contain a usable prompt", raw);
       return;
     }
-    this.#entryOccurrence.handled = true;
+    const occurrence = this.#activateOccurrence("entry", "EnterTextList", token);
+    if (occurrence.handled) return;
+    occurrence.handled = true;
+    occurrence.playerCallInFlight = true;
 
     const round = this.#observeRound(3);
     const timeoutMs = this.#options.defaultThriplashTimeoutMs;
@@ -529,6 +582,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       deadlineMs,
       ["", "", ""] as [string, string, string],
     );
+    occurrence.playerCallInFlight = false;
+    if (!this.#isCurrentOccurrence("entry", occurrence)) return;
     let answers: [string, string, string] = [
       cleanLine(result.value[0], maxLength),
       cleanLine(result.value[1], maxLength),
@@ -536,7 +591,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     ];
 
     try {
-      answers = await this.#submitThriplash(
+      this.#markActionSent(occurrence);
+      const submittedAnswers = await this.#submitThriplash(
         state,
         answers,
         raw,
@@ -544,7 +600,10 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         deadlineMs,
         maxLength,
         fieldCount,
+        occurrence,
       );
+      if (submittedAnswers === undefined) return;
+      answers = submittedAnswers;
       this.#emitEvent({
         type: "answer.submitted",
         gameId: this.gameId,
@@ -558,6 +617,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
+      this.#markActionFailed("entry", occurrence);
       this.#logRaw("Thriplash submission failed", raw, error);
       this.#reportError(asError(error));
     }
@@ -571,11 +631,13 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     deadlineMs: number,
     maxLength: number,
     fieldCount: number,
-  ): Promise<[string, string, string]> {
+    occurrence: ActiveOccurrence,
+  ): Promise<[string, string, string] | undefined> {
     let answers = initialAnswers;
     let reasks = 0;
     let triedVariant = false;
     while (true) {
+      if (!this.#isCurrentOccurrence("entry", occurrence)) return undefined;
       const fields = [...answers].slice(0, fieldCount);
       while (fields.length < fieldCount) fields.push("");
       try {
@@ -592,6 +654,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
 
         if (reasks < 2 && this.#now() < deadlineMs) {
           reasks += 1;
+          occurrence.playerCallInFlight = true;
           const revised = await this.#beforeDeadline(
             () => this.player.answerFinal(prompt, this.#context(
               3,
@@ -604,6 +667,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
             deadlineMs,
             ["", "", ""] as [string, string, string],
           );
+          occurrence.playerCallInFlight = false;
+          if (!this.#isCurrentOccurrence("entry", occurrence)) return undefined;
           if (!revised.fallback) {
             answers = revised.value.map((answer) => cleanLine(answer, maxLength)) as [
               string,
@@ -626,21 +691,20 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     // The controller shows choices for null and the empty string. Treat missing
     // data like its null model default; doneText alone never completes a vote.
     if (state.chosen !== null && state.chosen !== undefined && state.chosen !== "") {
-      this.#choiceOccurrence = undefined;
+      this.#leaveOccurrence("choice", "MakeSingleChoice completed");
       return;
     }
     const prompt = extractPrompt(state.prompt);
     const choices = projectChoices(state.choices);
     const token = choiceToken(state, raw.playerEntity, choices);
-    if (this.#choiceOccurrence?.token !== token) {
-      this.#choiceOccurrence = { token, handled: false };
-    }
-    if (this.#choiceOccurrence.handled) return;
     if (!prompt || choices.length === 0) {
       this.#logRaw("MakeSingleChoice did not contain a usable prompt and choices", raw);
       return;
     }
-    this.#choiceOccurrence.handled = true;
+    const occurrence = this.#activateOccurrence("choice", "MakeSingleChoice", token);
+    if (occurrence.handled) return;
+    occurrence.handled = true;
+    occurrence.playerCallInFlight = true;
 
     const round = this.#observeRound(inferRound(state, "MakeSingleChoice", this.#round));
     const timeoutMs = this.#options.defaultVoteTimeoutMs;
@@ -668,12 +732,15 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       deadlineMs,
       0,
     );
+    occurrence.playerCallInFlight = false;
+    if (!this.#isCurrentOccurrence("choice", occurrence)) return;
     const selectedIndex = Number.isInteger(result.value) && result.value >= 0 && result.value < choices.length
       ? result.value
       : 0;
     const selected = choices[selectedIndex] ?? choices[0];
     if (!selected) return;
     try {
+      this.#markActionSent(occurrence);
       await this.connection.sendToHost({ action: "choose", choice: selected.runtimeId });
       this.#emitEvent({
         type: "vote.cast",
@@ -690,9 +757,104 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
+      this.#markActionFailed("choice", occurrence);
       this.#logRaw("Vote submission failed", raw, error);
       this.#reportError(asError(error));
     }
+  }
+
+  #activateOccurrence(
+    slot: "entry" | "choice",
+    state: ActiveOccurrence["state"],
+    token: string,
+  ): ActiveOccurrence {
+    const current = slot === "entry" ? this.#entryOccurrence : this.#choiceOccurrence;
+    if (current?.token === token && current.state === state) return current;
+    if (current) this.#leaveOccurrence(slot, `${current.state} was superseded`);
+
+    const occurrence: ActiveOccurrence = {
+      token,
+      state,
+      handled: false,
+      actionSent: false,
+      playerCallInFlight: false,
+      cancelled: false,
+      missed: false,
+      watchdog: undefined,
+    };
+    if (slot === "entry") this.#entryOccurrence = occurrence;
+    else this.#choiceOccurrence = occurrence;
+    this.#armWatchdog(slot, occurrence);
+    return occurrence;
+  }
+
+  #isCurrentOccurrence(slot: "entry" | "choice", occurrence: ActiveOccurrence): boolean {
+    return !occurrence.cancelled
+      && (slot === "entry" ? this.#entryOccurrence : this.#choiceOccurrence) === occurrence;
+  }
+
+  #markActionSent(occurrence: ActiveOccurrence): void {
+    occurrence.actionSent = true;
+    if (occurrence.watchdog) clearTimeout(occurrence.watchdog);
+    occurrence.watchdog = undefined;
+  }
+
+  #markActionFailed(slot: "entry" | "choice", occurrence: ActiveOccurrence): void {
+    if (!this.#isCurrentOccurrence(slot, occurrence)) return;
+    occurrence.actionSent = false;
+    this.#armWatchdog(slot, occurrence);
+  }
+
+  #leaveOccurrence(slot: "entry" | "choice", message: string, reportMissed = true): void {
+    const occurrence = slot === "entry" ? this.#entryOccurrence : this.#choiceOccurrence;
+    if (!occurrence) return;
+    if (slot === "entry") this.#entryOccurrence = undefined;
+    else this.#choiceOccurrence = undefined;
+    occurrence.cancelled = true;
+    if (occurrence.watchdog) clearTimeout(occurrence.watchdog);
+    occurrence.watchdog = undefined;
+    if (reportMissed && !occurrence.actionSent) {
+      this.#recordMissedOccurrence(occurrence, "superseded", message);
+    }
+  }
+
+  #armWatchdog(slot: "entry" | "choice", occurrence: ActiveOccurrence): void {
+    if (occurrence.watchdog) clearTimeout(occurrence.watchdog);
+    occurrence.watchdog = setTimeout(() => {
+      occurrence.watchdog = undefined;
+      if (!this.#isCurrentOccurrence(slot, occurrence)
+        || occurrence.actionSent) return;
+      if (occurrence.playerCallInFlight) {
+        this.#armWatchdog(slot, occurrence);
+        return;
+      }
+
+      this.#recordMissedOccurrence(
+        occurrence,
+        "watchdog",
+        `${occurrence.state} watchdog found an unhandled actionable occurrence`,
+      );
+      occurrence.handled = false;
+      this.#dispatchState();
+    }, this.#options.watchdogGraceMs);
+    occurrence.watchdog.unref();
+  }
+
+  #recordMissedOccurrence(
+    occurrence: ActiveOccurrence,
+    reason: "superseded" | "watchdog",
+    message: string,
+  ): void {
+    if (!occurrence.missed) {
+      occurrence.missed = true;
+      this.#missedOccurrences += 1;
+    }
+    const details = `${message}; stateKey=${occurrence.token}; missedOccurrences=${this.#missedOccurrences}`;
+    this.#logRaw(`HARNESS OCCURRENCE MISSED: ${details}`);
+    this.#reportError(new Error(details), {
+      reason,
+      stateKey: occurrence.token,
+    });
   }
 
   async #postGame(raw: StateView): Promise<void> {
@@ -821,12 +983,21 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     }
   }
 
-  #reportError(error: Error): void {
-    const event: GameEvent = {
+  #reportError(
+    error: Error,
+    diagnostics: { reason?: string; stateKey?: string } = {},
+  ): void {
+    const event: GameEvent & {
+      reason?: string;
+      stateKey?: string;
+      missedOccurrences: number;
+    } = {
       type: "harness.error",
       gameId: this.gameId,
       ...(this.playerId ? { playerId: this.playerId } : {}),
       message: error.message,
+      ...diagnostics,
+      missedOccurrences: this.#missedOccurrences,
       at: this.#at(),
     };
     this.#emitEvent(event);
@@ -864,6 +1035,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         state: this.#stateTiming.state,
         nextState: state,
         durationMs: Math.max(0, now - this.#stateTiming.enteredAt),
+        missedOccurrences: this.#missedOccurrences,
         enteredAt: new Date(this.#stateTiming.enteredAt).toISOString(),
         at: new Date(now).toISOString(),
       };

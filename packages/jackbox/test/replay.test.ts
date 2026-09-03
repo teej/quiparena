@@ -7,6 +7,7 @@ import { GameAggregator } from "../src/aggregator.js";
 import { replayDirectory } from "../src/replay.js";
 
 const recordingDir = fileURLToPath(new URL("./fixtures/VWIJ-1", import.meta.url));
+const slowRecordingDir = fileURLToPath(new URL("./fixtures/ZQGH-1", import.meta.url));
 
 describe("recording replay", () => {
   it("sends exactly one action for every real VWIJ-1 gameplay-state occurrence", async () => {
@@ -47,6 +48,24 @@ describe("recording replay", () => {
       expect(event.matchup.prompt).not.toMatch(/vote for your favorite/i);
       expect(event.matchup.answers.every((answer) => /tiny horse|moon's least/i.test(answer.text)))
         .toBe(true);
+    }
+  }, 30_000);
+
+  it("sends exactly one action for every real ZQGH-1 occurrence with a 900ms Player", async () => {
+    const reports = await replayDirectory(slowRecordingDir, { playerDelayMs: 900 });
+
+    expect(reports).toHaveLength(8);
+    for (const report of reports) {
+      expect(report.statesSeen).toEqual({
+        EnterSingleText: 3,
+        EnterTextList: 0,
+        MakeSingleChoice: 6,
+      });
+      expect(report.actionsSent).toEqual(report.statesSeen);
+      expect(report.missedStates).toEqual([]);
+      expect(report.extraActions).toEqual([]);
+      expect(report.unassignedActions).toBe(0);
+      expect(report.ok).toBe(true);
     }
   }, 30_000);
 });
