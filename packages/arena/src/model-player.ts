@@ -18,15 +18,17 @@ import {
 } from "./sanitize.js";
 
 export const DEFAULT_REASONING_TOKENS = {
-  answer: 600,
-  vote: 200,
-  thriplash: 900,
+  answer: 400,
+  vote: 150,
+  thriplash: 600,
 } as const;
 
 export const DEFAULT_FAST_RETRY_BUDGET_MS = {
-  answer: 8_000,
+  answer: 5_000,
   vote: 4_000,
 } as const;
+
+export const MANDATORY_REASONING_RETRY_TOKENS = 64;
 
 const FAST_OUTPUT_TOKENS = {
   answer: 64,
@@ -41,14 +43,14 @@ const SYSTEM_PROMPT = [
   "Obey the character limit and exact output format in the user request.",
 ].join(" ");
 
-export const DEFAULT_SAFETY_MARGIN_MS = 4_000;
+export const DEFAULT_SAFETY_MARGIN_MS = 0;
 
 export type ReasoningEffort = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 export type ReasoningConfig =
   | { effort: ReasoningEffort }
   | { maxTokens: number; voteMaxTokens?: number | undefined; thriplashMaxTokens?: number | undefined };
 
-type GenerationPurpose = "answer" | "vote" | "thriplash";
+export type GenerationPurpose = "answer" | "vote" | "thriplash";
 type AttemptKind = "primary" | "fast" | "corrective";
 
 /** A deliberately tiny interface so traces can go to a websocket, recorder, or console. */
@@ -69,11 +71,13 @@ export interface ModelPlayerConfig {
   model: string;
   displayName: string;
   reasoning?: ReasoningConfig | null;
+  /** Force even fast retries to retain a minimal reasoning budget. */
+  reasoningMandatory?: boolean;
   temperature?: number;
   safetyMarginMs?: number;
-  /** Time held back for an answer or Thriplash retry with reasoning disabled. */
+  /** Time held back for an answer or Thriplash fast retry. */
   fastRetryBudgetMs?: number;
-  /** Time held back for a vote retry with reasoning disabled. */
+  /** Time held back for a vote fast retry. */
   voteFastRetryBudgetMs?: number;
   answerLimit?: number;
   fallback?: string;
@@ -98,6 +102,7 @@ interface GenerationResult {
   firstTokenMs: number | null;
   startedAfterMs: number;
   aborted: boolean;
+  mandatoryReasoningError: boolean;
   correction?: { text: string; reason: string };
 }
 
@@ -108,6 +113,9 @@ const DEFAULT_LOGGER: ModelPlayerLogger = {
   error: (message, error) => console.error(message, error),
   warn: (message) => console.warn(message),
 };
+
+const mandatoryReasoningModels = new Set<string>();
+const loggedMandatoryReasoningModels = new Set<string>();
 
 function providerReasoning(reasoning: ReasoningConfig): OpenRouterProviderOptions["reasoning"] {
   return "maxTokens" in reasoning
@@ -122,6 +130,46 @@ const DISABLED_PROVIDER_REASONING: OpenRouterProviderOptions["reasoning"] = {
   exclude: true,
   effort: "none",
 };
+
+const MINIMAL_PROVIDER_REASONING: OpenRouterProviderOptions["reasoning"] = {
+  max_tokens: MANDATORY_REASONING_RETRY_TOKENS,
+};
+
+type RetryReasoningMode = "configured" | "disabled" | "minimal";
+
+export function splitAttemptDeadlines(
+  deadlineMs: number,
+  purpose: GenerationPurpose,
+  options: {
+    answerRetryBudgetMs?: number;
+    voteRetryBudgetMs?: number;
+    safetyMarginMs?: number;
+  } = {},
+): { primaryDeadlineMs: number; retryDeadlineMs: number } {
+  const retryBudgetMs = purpose === "vote"
+    ? options.voteRetryBudgetMs ?? DEFAULT_FAST_RETRY_BUDGET_MS.vote
+    : options.answerRetryBudgetMs ?? DEFAULT_FAST_RETRY_BUDGET_MS.answer;
+  const retryDeadlineMs = deadlineMs - (options.safetyMarginMs ?? DEFAULT_SAFETY_MARGIN_MS);
+  return {
+    primaryDeadlineMs: retryDeadlineMs - retryBudgetMs,
+    retryDeadlineMs,
+  };
+}
+
+function errorText(value: unknown, seen = new Set<unknown>()): string {
+  if (typeof value === "string") return value;
+  if (typeof value !== "object" || value === null || seen.has(value)) return String(value ?? "");
+  seen.add(value);
+  const record = value as Record<string, unknown>;
+  return [record["name"], record["message"], record["cause"], record["data"], record["responseBody"]]
+    .map((item) => errorText(item, seen))
+    .join(" ");
+}
+
+export function isMandatoryReasoningError(error: unknown): boolean {
+  const message = errorText(error);
+  return /reasoning is mandatory|reasoning.{0,40}(?:must|required).{0,20}(?:enabled|true)|reasoning.{0,40}cannot be disabled/iu.test(message);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -271,6 +319,7 @@ export class ModelPlayer implements Player {
     this.logger = config.logger ?? DEFAULT_LOGGER;
     this.onFailure = config.onFailure;
     this.random = config.random ?? Math.random;
+    if (config.reasoningMandatory) mandatoryReasoningModels.add(this.modelId);
 
     if (config.languageModel) {
       this.languageModel = config.languageModel;
@@ -304,6 +353,7 @@ export class ModelPlayer implements Player {
       startedAt,
       hasUsableText,
     );
+    const budgetMiss = !hasUsableText(generated.text) && this.exhaustedBothAttempts(generations);
     let answer = sanitizeAnswer(generated.text, { fallback: this.fallback });
     for (let reasks = 0; reasks < 2 && characterLength(answer) > maxLength; reasks += 1) {
       if (!this.canReask(ctx)) break;
@@ -317,7 +367,7 @@ export class ModelPlayer implements Player {
         abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
         kind: "corrective",
         purpose: "answer",
-        reasoningEnabled: false,
+        reasoningMode: this.retryReasoningMode(),
         traceStartedAt: startedAt,
         correction: { text: answer, reason },
       });
@@ -327,7 +377,7 @@ export class ModelPlayer implements Player {
     }
 
     if (characterLength(answer) > maxLength) answer = truncateToLimit(answer, maxLength);
-    this.emitTrace(prompt, answer, generations, ctx, startedAt);
+    this.emitTrace(prompt, answer, generations, ctx, startedAt, "answer", budgetMiss);
     return answer;
   }
 
@@ -354,6 +404,8 @@ export class ModelPlayer implements Player {
       startedAt,
       (text) => hasUsableFinalText(text, fieldCount),
     );
+    const budgetMiss = !hasUsableFinalText(generated.text, fieldCount)
+      && this.exhaustedBothAttempts(generations);
     const answers = parseFinalAnswers(generated.text, { fallback: this.fallback });
     for (let reasks = 0; reasks < 2; reasks += 1) {
       const overLimit = answers
@@ -378,7 +430,7 @@ export class ModelPlayer implements Player {
         abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
         kind: "corrective",
         purpose: "thriplash",
-        reasoningEnabled: false,
+        reasoningMode: this.retryReasoningMode(),
         traceStartedAt: startedAt,
         correction: { text: overLimit.map((line) => line.answer).join("\n"), reason },
       });
@@ -393,7 +445,15 @@ export class ModelPlayer implements Player {
     answers.forEach((answer, index) => {
       if (characterLength(answer) > maxLength) answers[index] = truncateToLimit(answer, maxLength);
     });
-    this.emitTrace(prompt, answers.join("\n"), generations, ctx, startedAt);
+    this.emitTrace(
+      prompt,
+      answers.join("\n"),
+      generations,
+      ctx,
+      startedAt,
+      "thriplash",
+      budgetMiss,
+    );
     return answers;
   }
 
@@ -401,7 +461,7 @@ export class ModelPlayer implements Player {
     const startedAt = performance.now();
     if (options.length === 0) {
       this.logWarn(`[${this.modelId}] vote requested without options; choosing index 0`);
-      this.emitTrace(prompt, "0", [], ctx, startedAt);
+      this.emitTrace(prompt, "0", [], ctx, startedAt, "vote", false);
       return 0;
     }
 
@@ -424,6 +484,8 @@ export class ModelPlayer implements Player {
       startedAt,
       (text) => parseVote(text, options.length) !== undefined,
     );
+    const budgetMiss = parseVote(generated.text, options.length) === undefined
+      && this.exhaustedBothAttempts(generations);
     let choice = parseVote(generated.text, options.length);
     if (choice === undefined) {
       choice = this.randomChoice(options.length);
@@ -431,7 +493,7 @@ export class ModelPlayer implements Player {
         `[${this.modelId}] could not parse vote ${JSON.stringify(generated.text)}; randomly chose ${choice}`,
       );
     }
-    this.emitTrace(prompt, String(choice), generations, ctx, startedAt);
+    this.emitTrace(prompt, String(choice), generations, ctx, startedAt, "vote", budgetMiss);
     return choice;
   }
 
@@ -444,27 +506,42 @@ export class ModelPlayer implements Player {
     traceStartedAt: number,
     isUsable: (text: string) => boolean,
   ): Promise<GenerationResult> {
-    const retryBudgetMs = purpose === "vote" ? this.voteFastRetryBudgetMs : this.fastRetryBudgetMs;
+    const deadlines = splitAttemptDeadlines(ctx.deadlineMs, purpose, {
+      answerRetryBudgetMs: this.fastRetryBudgetMs,
+      voteRetryBudgetMs: this.voteFastRetryBudgetMs,
+      safetyMarginMs: this.safetyMarginMs,
+    });
     const primary = await this.generate(messages, ctx, {
       answerTokens,
-      abortAtMs: ctx.deadlineMs - this.safetyMarginMs - retryBudgetMs,
+      abortAtMs: deadlines.primaryDeadlineMs,
       kind: "primary",
       purpose,
-      reasoningEnabled: true,
+      reasoningMode: "configured",
       traceStartedAt,
     });
     generations.push(primary);
     if (isUsable(primary.text)) return primary;
 
-    const fast = await this.generate(messages, ctx, {
+    let fast = await this.generate(messages, ctx, {
       answerTokens: FAST_OUTPUT_TOKENS[purpose],
-      abortAtMs: ctx.deadlineMs - this.safetyMarginMs,
+      abortAtMs: deadlines.retryDeadlineMs,
       kind: "fast",
       purpose,
-      reasoningEnabled: false,
+      reasoningMode: this.retryReasoningMode(),
       traceStartedAt,
     });
     generations.push(fast);
+    if (fast.mandatoryReasoningError && !isUsable(fast.text) && Date.now() < deadlines.retryDeadlineMs) {
+      fast = await this.generate(messages, ctx, {
+        answerTokens: FAST_OUTPUT_TOKENS[purpose],
+        abortAtMs: deadlines.retryDeadlineMs,
+        kind: "fast",
+        purpose,
+        reasoningMode: "minimal",
+        traceStartedAt,
+      });
+      generations.push(fast);
+    }
     return fast;
   }
 
@@ -476,7 +553,7 @@ export class ModelPlayer implements Player {
       abortAtMs: number;
       kind: AttemptKind;
       purpose: GenerationPurpose;
-      reasoningEnabled: boolean;
+      reasoningMode: RetryReasoningMode;
       traceStartedAt: number;
       correction?: { text: string; reason: string };
     },
@@ -494,10 +571,18 @@ export class ModelPlayer implements Player {
     let providerMetadata: ProviderMetadata | undefined;
     let firstTokenMs: number | null = null;
     let aborted = controller.signal.aborted;
-    const configuredReasoning = options.reasoningEnabled ? this.reasoningFor(options.purpose) : null;
-    const maxOutputTokens = options.answerTokens + (configuredReasoning === null
+    let mandatoryReasoningError = false;
+    const configuredReasoning = options.reasoningMode === "configured"
+      ? this.reasoningFor(options.purpose)
+      : options.reasoningMode === "minimal"
+        ? { maxTokens: MANDATORY_REASONING_RETRY_TOKENS } satisfies ReasoningConfig
+        : null;
+    const reasoningTokens = configuredReasoning === null
       ? 0
-      : this.reasoningBudget(options.purpose));
+      : "maxTokens" in configuredReasoning
+        ? configuredReasoning.maxTokens
+        : this.reasoningBudget(options.purpose);
+    const maxOutputTokens = options.answerTokens + reasoningTokens;
 
     try {
       const result = streamText({
@@ -509,10 +594,12 @@ export class ModelPlayer implements Player {
         abortSignal: controller.signal,
         onError: () => undefined,
         ...(this.temperature === undefined ? {} : { temperature: this.temperature }),
-        ...(!options.reasoningEnabled
+        ...(options.reasoningMode === "disabled"
           ? this.reasoning === null
             ? {}
             : { providerOptions: { openrouter: { reasoning: DISABLED_PROVIDER_REASONING } } }
+          : options.reasoningMode === "minimal"
+            ? { providerOptions: { openrouter: { reasoning: MINIMAL_PROVIDER_REASONING } } }
           : configuredReasoning === null
             ? {}
             : {
@@ -539,8 +626,13 @@ export class ModelPlayer implements Player {
             providerMetadata = part.providerMetadata;
             break;
           case "error":
-            this.logError(`[${this.modelId}] model stream error`, part.error);
-            this.reportFailure(part.error, ctx);
+            if (options.reasoningMode === "disabled" && isMandatoryReasoningError(part.error)) {
+              mandatoryReasoningError = true;
+              this.rememberMandatoryReasoning();
+            } else {
+              this.logError(`[${this.modelId}] model stream error`, part.error);
+              this.reportFailure(part.error, ctx);
+            }
             break;
           case "abort":
             aborted = true;
@@ -552,6 +644,9 @@ export class ModelPlayer implements Player {
         aborted = true;
         this.logWarn(`[${this.modelId}] ${options.kind} generation stopped at its time budget`);
         this.reportFailure(new Error("Model generation timed out"), ctx);
+      } else if (options.reasoningMode === "disabled" && isMandatoryReasoningError(error)) {
+        mandatoryReasoningError = true;
+        this.rememberMandatoryReasoning();
       } else {
         this.logError(`[${this.modelId}] generation failed`, error);
         this.reportFailure(error, ctx);
@@ -568,6 +663,7 @@ export class ModelPlayer implements Player {
       firstTokenMs,
       startedAfterMs: Math.max(0, Math.round(startedAt - options.traceStartedAt)),
       aborted,
+      mandatoryReasoningError,
       ...(options.correction === undefined ? {} : { correction: options.correction }),
       ...(usage === undefined ? {} : { usage }),
       ...(providerMetadata === undefined ? {} : { providerMetadata }),
@@ -589,6 +685,8 @@ export class ModelPlayer implements Player {
     generations: readonly GenerationResult[],
     ctx: PlayerContext,
     startedAt: number,
+    purpose: GenerationPurpose,
+    budgetMiss: boolean,
   ): void {
     if (!this.sink) return;
     const attempts: TraceAttempt[] = generations.map((generated) => ({
@@ -603,9 +701,11 @@ export class ModelPlayer implements Player {
       type: "trace.completed",
       gameId: ctx.gameId,
       playerId: this.playerId,
+      purpose,
       prompt,
       reasoning: generations.map((generated) => generated.reasoning).filter(Boolean).join("\n\n"),
       answer,
+      ...(budgetMiss ? { budgetMiss: true } : {}),
       attempts,
       usage: combinedTraceUsage(generations, elapsedMs(startedAt)),
       at: new Date().toISOString(),
@@ -632,6 +732,30 @@ export class ModelPlayer implements Player {
 
   private canReask(ctx: PlayerContext): boolean {
     return Date.now() < ctx.deadlineMs - this.safetyMarginMs;
+  }
+
+  private retryReasoningMode(): RetryReasoningMode {
+    if (!mandatoryReasoningModels.has(this.modelId)) return "disabled";
+    this.logMandatoryReasoningOnce();
+    return "minimal";
+  }
+
+  private rememberMandatoryReasoning(): void {
+    mandatoryReasoningModels.add(this.modelId);
+    this.logMandatoryReasoningOnce();
+  }
+
+  private logMandatoryReasoningOnce(): void {
+    if (loggedMandatoryReasoningModels.has(this.modelId)) return;
+    loggedMandatoryReasoningModels.add(this.modelId);
+    this.logWarn(
+      `[${this.modelId}] reasoning is mandatory; retries use a minimal ${MANDATORY_REASONING_RETRY_TOKENS}-token reasoning budget`,
+    );
+  }
+
+  private exhaustedBothAttempts(generations: readonly GenerationResult[]): boolean {
+    return generations.some((generation) => generation.kind === "primary" && generation.aborted)
+      && generations.some((generation) => generation.kind === "fast" && generation.aborted);
   }
 
   private reasoningFor(purpose: GenerationPurpose): ReasoningConfig | null {

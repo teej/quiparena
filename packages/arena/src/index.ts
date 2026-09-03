@@ -1,3 +1,4 @@
+export * from "./budget-tracker.js";
 export * from "./db/client.js";
 export * from "./db/operations.js";
 export * from "./db/queries.js";

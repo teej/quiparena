@@ -7,7 +7,7 @@
       "displayName": "GPT-5.6 Sol",
       "lab": "OpenAI",
       "released": "2026-07-09",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": null,
       "enabled": true,
       "rationale": "OpenAI's current GPT-5.6 flagship; reasoning model."
@@ -17,7 +17,7 @@
       "displayName": "GPT-5.6 Luna",
       "lab": "OpenAI",
       "released": "2026-07-09",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": null,
       "enabled": true,
       "rationale": "Fast, inexpensive GPT-5.6 tier for a current OpenAI mid-tier comparison; reasoning model."
@@ -27,7 +27,7 @@
       "displayName": "Fable 5.1",
       "lab": "Anthropic",
       "released": "2026-09-01",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": null,
       "enabled": true,
       "rationale": "Anthropic's newest top-end release, one day old at catalog review; mandatory reasoning."
@@ -37,7 +37,7 @@
       "displayName": "Sonnet 5",
       "lab": "Anthropic",
       "released": "2026-06-30",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": null,
       "enabled": true,
       "rationale": "Anthropic's current value/performance tier; reasoning model."
@@ -47,7 +47,7 @@
       "displayName": "Gemini Pro",
       "lab": "Google",
       "released": "2026-02-19",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Google's newest text-output Pro flagship still listed; mandatory reasoning."
@@ -68,6 +68,7 @@
       "lab": "xAI",
       "released": "2026-08-12",
       "reasoning": { "maxTokens": 256 },
+      "reasoningMandatory": true,
       "temperature": 0.9,
       "enabled": false,
       "disabledReason": "2026-09-02 bench: all three answers exhausted the 48s primary budget, reasoning-disabled retries were rejected by the mandatory-reasoning endpoint, and 3/6 operations used fallbacks.",
@@ -88,7 +89,7 @@
       "displayName": "DS V4 Pro",
       "lab": "DeepSeek",
       "released": "2026-08-12",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "DeepSeek's newest GA V4 Pro flagship; reasoning model."
@@ -98,7 +99,7 @@
       "displayName": "DS V4 Flash",
       "lab": "DeepSeek",
       "released": "2026-07-31",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "DeepSeek's recent low-cost V4 speed tier; reasoning model."
@@ -108,7 +109,7 @@
       "displayName": "Qwen 3.8 Max",
       "lab": "Qwen/Alibaba",
       "released": "2026-08-03",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Alibaba's current Qwen3.8 flagship; reasoning model."
@@ -158,7 +159,8 @@
       "displayName": "GLM 5.3",
       "lab": "Zhipu/Z.ai",
       "released": "2026-08-18",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
+      "reasoningMandatory": true,
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Z.ai's newest full-size GLM flagship; reasoning model."
@@ -168,7 +170,7 @@
       "displayName": "Mercury 2.5",
       "lab": "Inception",
       "released": "2026-08-31",
-      "reasoning": { "maxTokens": 600 },
+      "reasoning": { "maxTokens": 400 },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "A two-day-old diffusion-language-model release chosen for architectural diversity; reasoning model."

@@ -35,6 +35,8 @@ export interface CreateSeatOptions {
   credentials?: SeatCredentials;
   recordFile?: string;
   postGameAction: "newPlayers" | "samePlayers" | "none";
+  answerBudgetMs?: number;
+  voteBudgetMs?: number;
   onEvent: (event: AnyEvent) => void;
 }
 

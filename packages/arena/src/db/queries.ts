@@ -18,11 +18,13 @@ export interface RecordedGameSummary {
 
 export interface RecordedTrace {
   playerId: string;
+  purpose?: "answer" | "vote" | "thriplash";
   prompt: string;
   reasoning: string;
   answer: string;
   usage?: Extract<StreamEvent, { type: "trace.completed" }>["usage"];
   attempts?: Extract<StreamEvent, { type: "trace.completed" }>["attempts"];
+  budgetMiss?: boolean;
   at: string;
 }
 
@@ -118,14 +120,26 @@ export async function loadRecordedTraces(
     const attempts = Array.isArray(stored["attempts"])
       ? stored["attempts"] as NonNullable<RecordedTrace["attempts"]>
       : undefined;
-    const { attempts: _attempts, ...usage } = stored;
+    const purpose = stored["purpose"] === "answer" || stored["purpose"] === "vote"
+      || stored["purpose"] === "thriplash"
+      ? stored["purpose"]
+      : undefined;
+    const budgetMiss = stored["budgetMiss"] === true;
+    const {
+      attempts: _attempts,
+      purpose: _purpose,
+      budgetMiss: _budgetMiss,
+      ...usage
+    } = stored;
     return {
       playerId: row.playerId,
+      ...(purpose === undefined ? {} : { purpose }),
       prompt: row.prompt,
       reasoning: row.reasoning,
       answer: row.answer,
       ...(Object.keys(usage).length === 0 ? {} : { usage: usage as NonNullable<RecordedTrace["usage"]> }),
       ...(attempts === undefined ? {} : { attempts }),
+      ...(budgetMiss ? { budgetMiss: true } : {}),
       at: row.createdAt.toISOString(),
     };
   });

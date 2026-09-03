@@ -21,6 +21,10 @@ export interface Quiplash3SeatOptions {
   now?: () => number;
 }
 
+export const DEFAULT_ANSWER_TIMEOUT_MS = 15_000;
+export const DEFAULT_THRIPLASH_TIMEOUT_MS = 15_000;
+export const DEFAULT_VOTE_TIMEOUT_MS = 10_000;
+
 interface Quiplash3SeatEventMap {
   event: [event: AnyEvent];
 }
@@ -96,10 +100,10 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     this.gameId = options.gameId;
     this.#now = options.now ?? Date.now;
     this.#options = {
-      defaultAnswerTimeoutMs: options.defaultAnswerTimeoutMs ?? 60_000,
-      defaultThriplashTimeoutMs: options.defaultThriplashTimeoutMs ?? 60_000,
-      defaultVoteTimeoutMs: options.defaultVoteTimeoutMs ?? 15_000,
-      timerSafetyMs: options.timerSafetyMs ?? 750,
+      defaultAnswerTimeoutMs: options.defaultAnswerTimeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS,
+      defaultThriplashTimeoutMs: options.defaultThriplashTimeoutMs ?? DEFAULT_THRIPLASH_TIMEOUT_MS,
+      defaultVoteTimeoutMs: options.defaultVoteTimeoutMs ?? DEFAULT_VOTE_TIMEOUT_MS,
+      timerSafetyMs: options.timerSafetyMs ?? 0,
       watchdogGraceMs: options.watchdogGraceMs ?? 3_000,
       autoStart: options.autoStart ?? false,
       postGameAction: options.postGameAction ?? "none",
@@ -465,6 +469,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         answer: submittedAnswer,
         blank: result.fallback || submittedAnswer.trim().length === 0 || submittedAnswer === "⁇",
         latencyMs: result.latencyMs,
+        ...(result.timedOut ? { budgetMiss: true } : {}),
         controller: controllerRaw(state),
         at: this.#at(),
       });
@@ -613,6 +618,7 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         answer: answers,
         blank: result.fallback || answers.every((answer) => answer.trim().length === 0),
         latencyMs: result.latencyMs,
+        ...(result.timedOut ? { budgetMiss: true } : {}),
         controller: controllerRaw(state),
         at: this.#at(),
       });
@@ -753,6 +759,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
           ? { choiceKey: selected.runtimeId }
           : {}),
         answer: selected.label,
+        latencyMs: result.latencyMs,
+        ...(result.timedOut ? { budgetMiss: true } : {}),
         controller: controllerRaw(state),
         at: this.#at(),
       });

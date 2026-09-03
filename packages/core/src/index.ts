@@ -99,6 +99,20 @@ export interface HarnessControllerRaw {
   doneText?: unknown;
 }
 
+export interface ModelBudgetSnapshot {
+  misses: number;
+  answerLatenciesMs: number[];
+}
+
+export interface ModelBenchSnapshot {
+  benched: boolean;
+  gamesRemaining: number;
+  consecutiveSlowGames: number;
+  reason?: string;
+  benchedAtGameId?: string;
+  updatedAtGameId?: string;
+}
+
 /**
  * Events emitted by the harness/arena. Persistent events form the game record;
  * ephemeral events stream to the website but are not stored individually.
@@ -110,22 +124,22 @@ export type GameEvent =
   | { type: "round.started"; gameId: string; round: RoundNumber; at: string }
   | { type: "prompt.dealt"; gameId: string; round: RoundNumber; playerId: string; prompt: string; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
   | { type: "answer.rejected"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; reason: string; at: string }
-  | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; controller?: HarnessControllerRaw; at: string }
+  | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; budgetMiss?: boolean; controller?: HarnessControllerRaw; at: string }
   | { type: "vote.requested"; gameId: string; round: RoundNumber; playerId: string; prompt: string; options: string[]; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
-  | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; choiceKey?: string | number; answer?: string; controller?: HarnessControllerRaw; at: string }
+  | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; choiceKey?: string | number; answer?: string; latencyMs?: number; budgetMiss?: boolean; controller?: HarnessControllerRaw; at: string }
   | { type: "matchup.resolved"; gameId: string; matchup: Matchup; at: string }
   | { type: "thriplash.resolved"; gameId: string; thriplash: Thriplash; at: string }
   | { type: "matchup.observed"; gameId: string; prompt: string; answers: [string, string]; winner: 0 | 1 | "tie"; percentages?: [number, number]; raw: unknown; at: string }
   | { type: "scoreboard.observed"; gameId: string; round: RoundNumber; standings: ObservedStanding[]; raw: unknown; at: string }
   | { type: "standings.observed"; gameId: string; standings: ObservedFinalStanding[]; winner: string; raw: unknown; at: string }
   | { type: "audience.votes"; gameId: string; prompt: string; counts: number[]; raw: unknown; at: string }
-  | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; at: string }
+  | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; budget?: Record<string, ModelBudgetSnapshot>; benchStates?: Record<string, ModelBenchSnapshot | null>; at: string }
   | { type: "harness.error"; gameId?: string; playerId?: string; message: string; reason?: string; stateKey?: string; missedOccurrences?: number; at: string };
 
 /** Ephemeral streaming events, for the live site only. */
 export type StreamEvent =
   | { type: "thinking.delta"; gameId: string; playerId: string; text: string; at: string }
   | { type: "answer.draft"; gameId: string; playerId: string; text: string; at: string }
-  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; attempts?: Array<{ kind: "primary" | "fast" | "corrective"; ms: number; firstTokenMs: number | null; reasoningTokens: number; aborted: boolean; text?: string; reason?: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number; totalMs?: number; firstTokenMs?: number | null }; at: string };
+  | { type: "trace.completed"; gameId: string; playerId: string; purpose?: "answer" | "vote" | "thriplash"; prompt: string; reasoning: string; answer: string; budgetMiss?: boolean; attempts?: Array<{ kind: "primary" | "fast" | "corrective"; ms: number; firstTokenMs: number | null; reasoningTokens: number; aborted: boolean; text?: string; reason?: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number; totalMs?: number; firstTokenMs?: number | null }; at: string };
 
 export type AnyEvent = GameEvent | StreamEvent;

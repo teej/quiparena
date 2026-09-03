@@ -378,10 +378,12 @@ function hasGameId(event: GameEvent): event is GameEvent & { gameId: string } {
 }
 
 function traceUsage(event: TraceEvent): Record<string, unknown> | null {
-  if (!event.usage && !event.attempts) return null;
+  if (!event.usage && !event.attempts && !event.budgetMiss && !event.purpose) return null;
   return {
     ...(event.usage ?? {}),
     ...(event.attempts === undefined ? {} : { attempts: event.attempts }),
+    ...(event.purpose === undefined ? {} : { purpose: event.purpose }),
+    ...(event.budgetMiss ? { budgetMiss: true } : {}),
   };
 }
 
@@ -551,6 +553,9 @@ export class Recorder {
           finalScores: finalScores ?? {},
         }).where(eq(games.id, event.gameId));
         await this.logScoreMismatches(db, event.gameId, finalScores ?? {});
+        for (const [modelSlug, benchState] of Object.entries(event.benchStates ?? {})) {
+          await db.update(models).set({ benchState }).where(eq(models.slug, modelSlug));
+        }
         break;
       }
 

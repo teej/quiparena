@@ -262,7 +262,7 @@ describe("arena worker", () => {
     }
   });
 
-  it("benches a model after failures in consecutive appearances", async () => {
+  it("benches a model after more than two budget misses in one game", async () => {
     const entries = roster(6);
     const seen: string[][] = [];
     const play = async (options: RunGameOptions): Promise<Game> => {
@@ -277,13 +277,20 @@ describe("arena worker", () => {
       }
       const failing = players.find((player) => player.modelId === "test/model-1");
       if (failing) {
-        options.bus?.emit({
-          type: "harness.error",
-          gameId,
-          playerId: failing.id,
-          message: "scripted failure",
-          at: new Date().toISOString(),
-        });
+        for (let miss = 1; miss <= 3; miss += 1) {
+          options.bus?.emit({
+            type: "trace.completed",
+            gameId,
+            playerId: failing.id,
+            purpose: "answer",
+            prompt: `slow prompt ${miss}`,
+            reasoning: "",
+            answer: "no comment",
+            budgetMiss: true,
+            usage: { inputTokens: 0, outputTokens: 0, totalMs: 15_000 },
+            at: new Date().toISOString(),
+          });
+        }
       }
       return {
         id: gameId,
@@ -300,17 +307,15 @@ describe("arena worker", () => {
       roster: entries,
       players: 3,
       keep: 1,
-      benchFailures: 2,
       gameClient: new FakeHarness({ playerCount: 3 }),
       runGame: play,
       rng: () => 0,
-      maxGames: 3,
+      maxGames: 2,
       logger: quiet,
       onGame: (_game, gameRoster) => seen.push(gameRoster.map((entry) => entry.slug)),
     });
     expect(seen[0]).toContain("test/model-1");
-    expect(seen[1]).toContain("test/model-1");
-    expect(seen[2]).not.toContain("test/model-1");
+    expect(seen[1]).not.toContain("test/model-1");
   });
 
   it("seeds keepers from the previous process and logs every selection rationale", async () => {

@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import type { AnyEvent, Game, Matchup, PlayerRef, Thriplash } from "@quiparena/core";
 import {
+  DEFAULT_ANSWER_TIMEOUT_MS,
+  DEFAULT_VOTE_TIMEOUT_MS,
   GameAggregator,
   loadCredentials,
   saveCredentials,
@@ -19,6 +21,16 @@ import { buildModelPlayer, RealGameClient } from "./seat-factory.js";
 import type { GameClient, Seat } from "./seat.js";
 
 export const DEFAULT_GAME_TIMEOUT_MS = 20 * 60_000;
+export const DEFAULT_ANSWER_BUDGET_MS = DEFAULT_ANSWER_TIMEOUT_MS;
+export const DEFAULT_VOTE_BUDGET_MS = DEFAULT_VOTE_TIMEOUT_MS;
+
+function environmentBudget(name: "ANSWER_BUDGET_MS" | "VOTE_BUDGET_MS", fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be a positive number`);
+  return parsed;
+}
 
 export class GameTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -42,6 +54,8 @@ export interface RunGameOptions {
   credentialsFile?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  answerBudgetMs?: number;
+  voteBudgetMs?: number;
   gameClient?: GameClient;
   playerFactory?: (entry: RosterModel, displayName: string, bus: WorkerEventBus) => Player;
   gameId?: string;
@@ -202,6 +216,16 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
   if (options.roster.length < 1) throw new Error("The game roster is empty");
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("timeoutMs must be positive");
+  const answerBudgetMs = options.answerBudgetMs
+    ?? environmentBudget("ANSWER_BUDGET_MS", DEFAULT_ANSWER_BUDGET_MS);
+  const voteBudgetMs = options.voteBudgetMs
+    ?? environmentBudget("VOTE_BUDGET_MS", DEFAULT_VOTE_BUDGET_MS);
+  if (!Number.isFinite(answerBudgetMs) || answerBudgetMs <= 0) {
+    throw new RangeError("answerBudgetMs must be positive");
+  }
+  if (!Number.isFinite(voteBudgetMs) || voteBudgetMs <= 0) {
+    throw new RangeError("voteBudgetMs must be positive");
+  }
 
   const bus = options.bus ?? new WorkerEventBus();
   const client: GameClient = options.gameClient ?? new RealGameClient();
@@ -304,6 +328,8 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
             ? {}
             : { recordFile: join(options.recordDir, "ecast", `${index + 1}-${safeFilename(player.name)}.jsonl`) }),
           postGameAction: "newPlayers",
+          answerBudgetMs,
+          voteBudgetMs,
           onEvent: emitSeatEvent,
         });
         seats.push(seat);

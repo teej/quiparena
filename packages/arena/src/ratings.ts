@@ -57,6 +57,8 @@ export interface LeaderboardEntry extends RatingEntry {
   displayName: string;
   lab: string;
   enabled: boolean;
+  benched: boolean;
+  benchReason: string | null;
   population: RatingPopulation;
   computedAt: string;
 }
@@ -413,6 +415,8 @@ export async function leaderboard(
       displayName: model?.displayName ?? entry.modelSlug.split("/").at(-1) ?? entry.modelSlug,
       lab: model?.lab ?? entry.modelSlug.split("/", 1)[0] ?? "unknown",
       enabled: model?.enabled ?? false,
+      benched: model?.benchState?.benched === true,
+      benchReason: model?.benchState?.benched === true ? model.benchState.reason ?? null : null,
       population,
       computedAt: snapshot.computedAt.toISOString(),
     };

@@ -3,7 +3,14 @@ import { simulateReadableStream } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 
-import { ModelPlayer, type ModelPlayerLogger } from "../src/model-player.js";
+import {
+  DEFAULT_FAST_RETRY_BUDGET_MS,
+  DEFAULT_REASONING_TOKENS,
+  MANDATORY_REASONING_RETRY_TOKENS,
+  ModelPlayer,
+  splitAttemptDeadlines,
+  type ModelPlayerLogger,
+} from "../src/model-player.js";
 import { parseFinalAnswers, parseVote, sanitizeAnswer } from "../src/sanitize.js";
 
 type MockStreamResult = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>;
@@ -179,6 +186,18 @@ describe("parseVote", () => {
 });
 
 describe("ModelPlayer streaming", () => {
+  it("reserves 5s of an answer budget and 4s of a vote budget for fast retry", () => {
+    expect(DEFAULT_FAST_RETRY_BUDGET_MS).toEqual({ answer: 5_000, vote: 4_000 });
+    expect(splitAttemptDeadlines(15_000, "answer")).toEqual({
+      primaryDeadlineMs: 10_000,
+      retryDeadlineMs: 15_000,
+    });
+    expect(splitAttemptDeadlines(10_000, "vote")).toEqual({
+      primaryDeadlineMs: 6_000,
+      retryDeadlineMs: 10_000,
+    });
+  });
+
   it("re-asks an over-length answer in the same conversation and uses the revision", async () => {
     const events: StreamEvent[] = [];
     const model = mockModelSequence([
@@ -188,7 +207,7 @@ describe("ModelPlayer streaming", () => {
     const player = new ModelPlayer({
       model: "test/revise",
       displayName: "Revise",
-      reasoning: { maxTokens: 600 },
+      reasoning: { maxTokens: 400 },
       languageModel: model,
       safetyMarginMs: 0,
       sink: (event) => events.push(event),
@@ -414,6 +433,7 @@ describe("ModelPlayer streaming", () => {
     await expect(player.answer("Hurry", context(Date.now() + 120))).resolves.toBe("no comment");
     expect(events.at(-1)).toMatchObject({
       answer: "no comment",
+      budgetMiss: true,
       attempts: [
         { kind: "primary", aborted: true },
         { kind: "fast", aborted: true },
@@ -488,7 +508,7 @@ describe("ModelPlayer streaming", () => {
     const player = new ModelPlayer({
       model: "test/budgets",
       displayName: "Budgets",
-      reasoning: { maxTokens: 600 },
+      reasoning: { maxTokens: 400 },
       languageModel: model,
       safetyMarginMs: 0,
       logger: quietLogger(),
@@ -498,12 +518,73 @@ describe("ModelPlayer streaming", () => {
     await player.vote("Prompt", ["one", "two"], context());
     await player.answerFinal("Prompt", { ...context(), round: 3 });
 
-    expect(model.doStreamCalls.map((call) => call.maxOutputTokens)).toEqual([728, 216, 1_156]);
+    expect(DEFAULT_REASONING_TOKENS).toEqual({ answer: 400, vote: 150, thriplash: 600 });
+    expect(model.doStreamCalls.map((call) => call.maxOutputTokens)).toEqual([528, 166, 856]);
     expect(model.doStreamCalls.map((call) => call.providerOptions)).toEqual([
+      { openrouter: { reasoning: { max_tokens: 400 } } },
+      { openrouter: { reasoning: { max_tokens: 150 } } },
       { openrouter: { reasoning: { max_tokens: 600 } } },
-      { openrouter: { reasoning: { max_tokens: 200 } } },
-      { openrouter: { reasoning: { max_tokens: 900 } } },
     ]);
+  });
+
+  it("detects mandatory reasoning, retries minimally, and remembers it for the process", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        call += 1;
+        if (call === 2) {
+          throw new Error("APICallError: Reasoning is mandatory for this endpoint and cannot be disabled");
+        }
+        const text = call === 3 ? "Recovered joke" : "";
+        const chunks: MockStreamPart[] = [
+          { type: "text-start", id: "text-1" },
+          ...(text ? [{ type: "text-delta" as const, id: "text-1", delta: text }] : []),
+          { type: "text-end", id: "text-1" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            usage,
+            providerMetadata: {},
+          },
+        ];
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    const logger = quietLogger();
+    const player = new ModelPlayer({
+      model: "test/mandatory-runtime",
+      displayName: "Mandatory",
+      reasoning: { maxTokens: 400 },
+      languageModel: model,
+      logger,
+    });
+
+    await expect(player.answer("Recover", context())).resolves.toBe("Recovered joke");
+    expect(model.doStreamCalls).toHaveLength(3);
+    expect(model.doStreamCalls[1]?.providerOptions).toEqual({
+      openrouter: { reasoning: { enabled: false, exclude: true, effort: "none" } },
+    });
+    expect(model.doStreamCalls[2]).toMatchObject({
+      maxOutputTokens: 64 + MANDATORY_REASONING_RETRY_TOKENS,
+      providerOptions: { openrouter: { reasoning: { max_tokens: MANDATORY_REASONING_RETRY_TOKENS } } },
+    });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+
+    const rememberedModel = mockModelSequence([{ text: "" }, { text: "Remembered joke" }]);
+    const rememberedLogger = quietLogger();
+    const remembered = new ModelPlayer({
+      model: "test/mandatory-runtime",
+      displayName: "Remembered",
+      reasoning: { maxTokens: 400 },
+      languageModel: rememberedModel,
+      logger: rememberedLogger,
+    });
+    await expect(remembered.answer("Again", context())).resolves.toBe("Remembered joke");
+    expect(rememberedModel.doStreamCalls).toHaveLength(2);
+    expect(rememberedModel.doStreamCalls[1]?.providerOptions).toEqual({
+      openrouter: { reasoning: { max_tokens: MANDATORY_REASONING_RETRY_TOKENS } },
+    });
+    expect(rememberedLogger.warn).not.toHaveBeenCalled();
   });
 
   it("passes reasoning effort through OpenRouter provider options", async () => {

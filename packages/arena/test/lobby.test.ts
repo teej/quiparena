@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { assignDisplayNames, pickNextLobby } from "../src/lobby.js";
+import {
+  advanceBenchStates,
+  assignDisplayNames,
+  pickNextLobby,
+  type ModelBenchState,
+} from "../src/lobby.js";
 
 const roster = Array.from({ length: 9 }, (_, index) => ({
   slug: `lab/model-${index}`,
@@ -9,7 +14,7 @@ const roster = Array.from({ length: 9 }, (_, index) => ({
 }));
 
 describe("pickNextLobby", () => {
-  it("keeps top finishers, rotates without duplicates, favors underplayed models, and benches failures", () => {
+  it("keeps top finishers, rotates without duplicates, favors underplayed models, and excludes benches", () => {
     const lastGame = {
       id: "last",
       players: [
@@ -22,11 +27,23 @@ describe("pickNextLobby", () => {
     };
     const history = [
       { players: ["lab/model-0", "lab/model-1", "lab/model-2", "lab/model-3", "lab/model-4"] },
-      { modelSlug: "lab/model-6", success: false },
-      { modelSlug: "lab/model-6", success: false },
       lastGame,
     ];
-    const lobby = pickNextLobby({ roster, lastGame, history, size: 5, keep: 2, rng: () => 0.5 });
+    const benchStates = new Map<string, ModelBenchState>([["lab/model-6", {
+      benched: true,
+      gamesRemaining: 10,
+      consecutiveSlowGames: 0,
+      reason: "too slow",
+    }]]);
+    const lobby = pickNextLobby({
+      roster,
+      lastGame,
+      history,
+      benchStates,
+      size: 5,
+      keep: 2,
+      rng: () => 0.5,
+    });
     const slugs = lobby.map((model) => model.slug);
 
     expect(slugs.slice(0, 2)).toEqual(["lab/model-1", "lab/model-2"]);
@@ -41,8 +58,10 @@ describe("pickNextLobby", () => {
       roster: roster.slice(0, 4),
       lastGame: null,
       history: [
-        { modelSlug: "lab/model-0", success: false },
-        { modelSlug: "lab/model-0", success: false },
+        {
+          players: ["lab/model-0"],
+          budget: { "lab/model-0": { misses: 3, answerLatenciesMs: [] } },
+        },
       ],
       size: 4,
       keep: 0,
@@ -50,6 +69,63 @@ describe("pickNextLobby", () => {
       rng: () => 0,
     });
     expect(lobby).toHaveLength(4);
+  });
+});
+
+describe("automatic bench rule", () => {
+  const game = (
+    id: string,
+    metrics: { misses: number; answerLatenciesMs: number[] },
+  ) => ({
+    id,
+    players: ["lab/model-0"],
+    budget: { "lab/model-0": metrics },
+  });
+
+  it("benches after more than two misses in one game", () => {
+    const update = advanceBenchStates(new Map(), game("g1", {
+      misses: 3,
+      answerLatenciesMs: [2_000, 3_000],
+    }));
+    expect(update.states.get("lab/model-0")).toMatchObject({
+      benched: true,
+      gamesRemaining: 10,
+      reason: expect.stringContaining("3 budget misses"),
+    });
+  });
+
+  it("benches after two consecutive games over the p50 answer budget", () => {
+    const first = advanceBenchStates(new Map(), game("g1", {
+      misses: 0,
+      answerLatenciesMs: [15_001, 16_000, 17_000],
+    }));
+    expect(first.states.get("lab/model-0")).toMatchObject({
+      benched: false,
+      consecutiveSlowGames: 1,
+    });
+    const second = advanceBenchStates(first.states, game("g2", {
+      misses: 0,
+      answerLatenciesMs: [15_500],
+    }));
+    expect(second.states.get("lab/model-0")).toMatchObject({
+      benched: true,
+      gamesRemaining: 10,
+      reason: expect.stringContaining("2 consecutive games"),
+    });
+  });
+
+  it("releases a bench only after ten subsequent games", () => {
+    let states = advanceBenchStates(new Map(), game("trigger", {
+      misses: 3,
+      answerLatenciesMs: [],
+    })).states;
+    for (let index = 1; index <= 9; index += 1) {
+      states = advanceBenchStates(states, { id: `other-${index}`, players: [] }).states;
+      expect(states.get("lab/model-0")?.benched).toBe(true);
+    }
+    const released = advanceBenchStates(states, { id: "other-10", players: [] });
+    expect(released.states.has("lab/model-0")).toBe(false);
+    expect(released.changes).toContainEqual(expect.objectContaining({ action: "unbenched" }));
   });
 });
 

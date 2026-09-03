@@ -4,16 +4,25 @@ import type { AnyEvent, Game } from "@quiparena/core";
 import type { Player } from "@quiparena/jackbox";
 
 import type { ArenaDatabaseClient } from "../db/client.js";
+import { BudgetMissTracker } from "../budget-tracker.js";
 import {
   abandonStaleGames,
   backfillCompletedGameScores,
   loadLobbyHistoryFromDb,
+  loadModelBenchStates,
+  persistModelBenchStates,
+  syncRosterModels,
 } from "../db/operations.js";
 import {
+  advanceBenchStates,
+  deriveBenchStates,
   pickNextLobby,
+  type BenchRule,
   type LobbyPickRationale,
   type LobbyGameHistory,
   type LobbyHistoryEntry,
+  type LobbyModelBudgetMetrics,
+  type ModelBenchState,
 } from "../lobby.js";
 import { computeRatings, type ComputeRatingsOptions, type RatingRun } from "../ratings.js";
 import type { RosterModel } from "../registry.js";
@@ -21,6 +30,8 @@ import { placementsFromScores, scoreGame } from "../scoring.js";
 import { WorkerEventBus } from "./bus.js";
 import {
   GameAbortedError,
+  DEFAULT_ANSWER_BUDGET_MS,
+  DEFAULT_VOTE_BUDGET_MS,
   runGame,
   type RunGameOptions,
 } from "./game-runner.js";
@@ -54,7 +65,10 @@ export interface RunLoopOptions {
   dailySpendCapUsd?: number;
   players?: number;
   keep?: number;
-  benchFailures?: number;
+  answerBudgetMs?: number;
+  voteBudgetMs?: number;
+  maxBudgetMisses?: number;
+  benchGames?: number;
   pollIntervalMs?: number;
   gameTimeoutMs?: number;
   gameClient?: GameClient;
@@ -191,6 +205,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function lobbyBudget(value: unknown): Record<string, LobbyModelBudgetMetrics> | undefined {
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value).flatMap(([slug, metrics]) => {
+    if (!isRecord(metrics)) return [];
+    const misses = metrics["misses"];
+    const latencies = metrics["answerLatenciesMs"];
+    if (!Number.isInteger(misses) || (misses as number) < 0 || !Array.isArray(latencies)
+      || latencies.some((latency) => typeof latency !== "number" || !Number.isFinite(latency))) {
+      return [];
+    }
+    return [[slug, {
+      misses: misses as number,
+      answerLatenciesMs: latencies as number[],
+    }] as const];
+  });
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function lobbyBenchStates(value: unknown): Record<string, ModelBenchState> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).flatMap(([slug, state]) => {
+    if (!isRecord(state)
+      || typeof state["benched"] !== "boolean"
+      || !Number.isInteger(state["gamesRemaining"])
+      || !Number.isInteger(state["consecutiveSlowGames"])) return [];
+    return [[slug, state as unknown as ModelBenchState] as const];
+  }));
+}
+
 function historyApiUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol === "ws:") url.protocol = "http:";
@@ -283,16 +326,30 @@ export async function loadLobbyHistoryFromApi(
       ...(placements[player.id] === undefined ? {} : { placement: placements[player.id] }),
       ...(finalScores?.[player.id] === undefined ? {} : { totalScore: finalScores[player.id] }),
     }));
+    const archivedEvents = isRecord(archive) && Array.isArray(archive["events"])
+      ? archive["events"].filter(isRecord)
+      : [];
+    const endedEvents = archivedEvents.slice().reverse().filter((event) => event["type"] === "game.ended");
+    const budget = endedEvents.flatMap((event) => (
+      event["type"] === "game.ended" ? [lobbyBudget(event["budget"])] : []
+    )).find((value) => value !== undefined);
+    const benchStates = endedEvents.map((event) => lobbyBenchStates(event["benchStates"]))
+      .find((value) => value !== undefined);
     return {
       id: game["id"],
       status: "completed",
       players,
       ...(finalScores === undefined ? {} : { finalScores }),
+      ...(budget === undefined ? {} : { budget }),
+      ...(benchStates === undefined ? {} : { benchStates }),
     } satisfies LobbyGameHistory;
   }))).filter((game) => game.players.length > 0);
 }
 
-function toHistory(game: Game, failures: ReadonlySet<string>): LobbyGameHistory {
+function toHistory(
+  game: Game,
+  budget: Readonly<Record<string, LobbyModelBudgetMetrics>>,
+): LobbyGameHistory {
   const rankingScores = lobbyScores(game);
   const ordered = Object.entries(rankingScores).sort((left, right) => right[1] - left[1]);
   const placement = new Map(game.observedPlacements
@@ -313,7 +370,7 @@ function toHistory(game: Game, failures: ReadonlySet<string>): LobbyGameHistory 
       };
     }),
     ...(Object.keys(rankingScores).length === 0 ? {} : { finalScores: rankingScores }),
-    failures: [...failures],
+    ...(Object.keys(budget).length === 0 ? {} : { budget }),
   };
 }
 
@@ -325,11 +382,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const play = options.runGame ?? runGame;
   const size = options.players ?? 8;
   const keep = options.keep ?? 2;
-  const benchFailures = options.benchFailures
-    ?? positiveNumber(process.env["MODEL_FAILURE_BENCH_GAMES"], 2, "MODEL_FAILURE_BENCH_GAMES");
-  if (!Number.isInteger(benchFailures) || benchFailures < 1) {
-    throw new Error("benchFailures must be a positive integer");
+  const answerBudgetMs = options.answerBudgetMs
+    ?? positiveNumber(process.env["ANSWER_BUDGET_MS"], DEFAULT_ANSWER_BUDGET_MS, "ANSWER_BUDGET_MS");
+  const voteBudgetMs = options.voteBudgetMs
+    ?? positiveNumber(process.env["VOTE_BUDGET_MS"], DEFAULT_VOTE_BUDGET_MS, "VOTE_BUDGET_MS");
+  if (answerBudgetMs <= 0) throw new Error("answerBudgetMs must be positive");
+  if (voteBudgetMs <= 0) throw new Error("voteBudgetMs must be positive");
+  const maxBudgetMisses = options.maxBudgetMisses
+    ?? positiveNumber(process.env["MODEL_BUDGET_MISS_LIMIT"], 2, "MODEL_BUDGET_MISS_LIMIT");
+  const benchGames = options.benchGames
+    ?? positiveNumber(process.env["MODEL_BENCH_GAMES"], 10, "MODEL_BENCH_GAMES");
+  if (!Number.isInteger(maxBudgetMisses)) throw new Error("maxBudgetMisses must be an integer");
+  if (!Number.isInteger(benchGames) || benchGames < 1) {
+    throw new Error("benchGames must be a positive integer");
   }
+  const benchRule: Partial<BenchRule> = { answerBudgetMs, maxBudgetMisses, benchGames };
   const spendCap = options.dailySpendCapUsd
     ?? positiveNumber(process.env["DAILY_SPEND_CAP_USD"], DEFAULT_DAILY_SPEND_CAP_USD, "DAILY_SPEND_CAP_USD");
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
@@ -337,7 +404,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     throw new Error("maxGames must be a positive integer");
   }
   let initialHistory = [...(options.seedHistory ?? [])];
+  let benchStates = new Map<string, ModelBenchState>();
   if (options.db) {
+    await syncRosterModels(options.db, options.roster);
     const abandoned = await abandonStaleGames(options.db);
     if (abandoned.length > 0) {
       logger.warn(`[quiparena/worker] abandoned stale games: ${abandoned.join(", ")}`);
@@ -347,12 +416,13 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       logger.info(`[quiparena/worker] backfilled vote-derived scores: ${backfilled.join(", ")}`);
     }
     initialHistory = await loadLobbyHistoryFromDb(options.db);
+    benchStates = await loadModelBenchStates(options.db);
+  } else {
+    benchStates = deriveBenchStates(initialHistory, benchRule);
   }
   const history: LobbyHistoryEntry[] = [...initialHistory];
   const gamesRun: Game[] = [];
-  const failuresByGame = new Map<string, Set<string>>();
-  const playerModels = new Map<string, string>();
-  const rosterSlugs = new Set(options.roster.map((entry) => entry.slug));
+  const budgetTracker = new BudgetMissTracker();
   let activeGameId: string | undefined;
   let currentDay = new Date().toISOString().slice(0, 10);
   let spentUsd = 0;
@@ -388,6 +458,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   };
 
   const unsubscribe = bus.on((event: AnyEvent) => {
+    budgetTracker.observe(event);
     if (event.type === "trace.completed" && event.usage?.costUsd !== undefined) {
       const eventDay = utcDay(event.at);
       if (eventDay !== currentDay) {
@@ -395,22 +466,6 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         spentUsd = 0;
       }
       spentUsd += event.usage.costUsd;
-    }
-    if (event.type === "player.joined" && event.player.modelId) {
-      playerModels.set(`${event.gameId}\0${event.player.id}`, event.player.modelId);
-    }
-    if (event.type === "harness.error") {
-      const gameId = event.gameId ?? activeGameId;
-      if (!gameId) return;
-      const model = event.playerId
-        ? playerModels.get(`${gameId}\0${event.playerId}`)
-          ?? (rosterSlugs.has(event.playerId) ? event.playerId : undefined)
-        : undefined;
-      if (model) {
-        const failures = failuresByGame.get(gameId) ?? new Set<string>();
-        failures.add(model);
-        failuresByGame.set(gameId, failures);
-      }
     }
   });
   const unsubscribeDb = options.db ? bus.addSink(new DbSink(options.db)) : undefined;
@@ -423,6 +478,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (await shouldGracefullyStop()) {
         return { games: gamesRun, spentUsd, reason: "graceful-stop" };
       }
+      if (options.db) benchStates = await loadModelBenchStates(options.db);
       const nextRoster = pickNextLobby({
         roster: options.roster,
         lastGame,
@@ -430,9 +486,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         size,
         keep,
         bench: {
-          consecutiveFailures: benchFailures,
-          lookback: Math.max(6, benchFailures),
+          ...benchRule,
         },
+        benchStates,
         onPick: logPick,
         ...(options.rng === undefined ? {} : { rng: options.rng }),
       });
@@ -450,6 +506,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           ...(options.signal === undefined ? {} : { signal: options.signal }),
           ...(options.gameTimeoutMs === undefined ? {} : { timeoutMs: options.gameTimeoutMs }),
           gameClient,
+          answerBudgetMs,
+          voteBudgetMs,
           ...(options.playerFactory === undefined ? {} : { playerFactory: options.playerFactory }),
         });
       } catch (error) {
@@ -477,12 +535,42 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
       await bus.flush();
       gamesRun.push(game);
-      const gameHistory = toHistory(game, failuresByGame.get(game.id) ?? new Set());
+      const gameHistory = toHistory(game, budgetTracker.metrics(game.id));
       if (!game.finalScores) {
         logger.warn("[quiparena/worker] controller exposed no final scores; selecting keepers by weighted matchup votes");
       }
       history.push(gameHistory);
       lastGame = gameHistory;
+      const benchUpdate = advanceBenchStates(benchStates, gameHistory, benchRule);
+      benchStates = benchUpdate.states;
+      for (const change of benchUpdate.changes) {
+        const message = `[quiparena/worker] ${change.action} ${change.modelSlug}: ${change.reason}`
+          + (change.action === "benched" ? `; ${change.gamesRemaining} games` : "");
+        if (change.action === "benched") logger.warn(message);
+        else logger.info(message);
+      }
+      if (options.db) {
+        await persistModelBenchStates(
+          options.db,
+          options.roster.map((entry) => entry.slug),
+          benchStates,
+        );
+      }
+      bus.emit({
+        type: "game.ended",
+        gameId: game.id,
+        ...(game.finalScores === undefined ? {} : { finalScores: game.finalScores }),
+        budget: Object.fromEntries(Object.entries(gameHistory.budget ?? {}).map(([slug, metrics]) => [
+          slug,
+          { misses: metrics.misses, answerLatenciesMs: [...metrics.answerLatenciesMs] },
+        ])),
+        benchStates: Object.fromEntries(options.roster.map((entry) => [
+          entry.slug,
+          benchStates.get(entry.slug) ?? null,
+        ])),
+        at: game.endedAt ?? new Date().toISOString(),
+      });
+      await bus.flush();
       let ratings: RatingRun | undefined;
       if (options.db) ratings = await computeRatings(options.db, options.ratingsOptions);
       await options.onGame?.(game, nextRoster, ratings);

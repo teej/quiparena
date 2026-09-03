@@ -1,16 +1,122 @@
+import type { StreamEvent } from "@quiparena/core";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
-import type { LobbyGameHistory } from "../lobby.js";
+import { BudgetMissTracker } from "../budget-tracker.js";
+import type {
+  LobbyGameHistory,
+  LobbyModelBudgetMetrics,
+  ModelBenchState,
+} from "../lobby.js";
 import { finalizeGameScores } from "../recorder.js";
+import type { RosterModel } from "../registry.js";
 import { placementsFromScores } from "../scoring.js";
 import type { ArenaDatabaseClient } from "./client.js";
-import { events, gamePlayers, games } from "./schema.js";
+import { events, gamePlayers, games, models, traces } from "./schema.js";
+
+type TraceEvent = Extract<StreamEvent, { type: "trace.completed" }>;
 
 export const STALE_GAME_AGE_MS = 30 * 60_000;
 
 export interface AbandonStaleGamesOptions {
   now?: Date;
   maxAgeMs?: number;
+}
+
+function isModelBenchState(value: unknown): value is ModelBenchState {
+  return typeof value === "object" && value !== null
+    && typeof (value as ModelBenchState).benched === "boolean"
+    && Number.isInteger((value as ModelBenchState).gamesRemaining)
+    && Number.isInteger((value as ModelBenchState).consecutiveSlowGames);
+}
+
+function modelBudgetMetrics(value: unknown): Record<string, LobbyModelBudgetMetrics> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).flatMap(([slug, metrics]) => {
+    if (typeof metrics !== "object" || metrics === null || Array.isArray(metrics)) return [];
+    const record = metrics as Record<string, unknown>;
+    const misses = record["misses"];
+    const latencies = record["answerLatenciesMs"];
+    if (!Number.isInteger(misses) || (misses as number) < 0 || !Array.isArray(latencies)
+      || latencies.some((latency) => typeof latency !== "number" || !Number.isFinite(latency))) {
+      return [];
+    }
+    return [[slug, { misses: misses as number, answerLatenciesMs: latencies as number[] }] as const];
+  });
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+/** Keep durable model metadata current without coupling automatic benching to enabled. */
+export async function syncRosterModels(
+  db: ArenaDatabaseClient,
+  roster: readonly RosterModel[],
+): Promise<void> {
+  for (const entry of roster) {
+    await db.insert(models).values({
+      slug: entry.slug,
+      displayName: entry.displayName,
+      lab: entry.lab,
+      enabled: entry.enabled,
+      config: {
+        released: entry.released,
+        reasoning: entry.reasoning,
+        ...(entry.reasoningMandatory === undefined
+          ? {}
+          : { reasoningMandatory: entry.reasoningMandatory }),
+        temperature: entry.temperature,
+        rationale: entry.rationale,
+        ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }),
+      },
+    }).onConflictDoUpdate({
+      target: models.slug,
+      set: {
+        displayName: entry.displayName,
+        lab: entry.lab,
+        enabled: entry.enabled,
+        config: {
+          released: entry.released,
+          reasoning: entry.reasoning,
+          ...(entry.reasoningMandatory === undefined
+            ? {}
+            : { reasoningMandatory: entry.reasoningMandatory }),
+          temperature: entry.temperature,
+          rationale: entry.rationale,
+          ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }),
+        },
+      },
+    });
+  }
+}
+
+export async function loadModelBenchStates(
+  db: ArenaDatabaseClient,
+): Promise<Map<string, ModelBenchState>> {
+  const rows = await db.select({ slug: models.slug, benchState: models.benchState }).from(models);
+  return new Map(rows.flatMap((row) => (
+    isModelBenchState(row.benchState) ? [[row.slug, row.benchState] as const] : []
+  )));
+}
+
+export async function persistModelBenchStates(
+  db: ArenaDatabaseClient,
+  modelSlugs: readonly string[],
+  states: ReadonlyMap<string, ModelBenchState>,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    for (const slug of modelSlugs) {
+      await transaction.update(models).set({ benchState: states.get(slug) ?? null })
+        .where(eq(models.slug, slug));
+    }
+  });
+}
+
+export async function clearModelBenchState(
+  db: ArenaDatabaseClient,
+  slug: string,
+): Promise<boolean> {
+  const updated = await db.update(models).set({ benchState: null })
+    .where(eq(models.slug, slug))
+    .returning({ slug: models.slug });
+  return updated.length > 0;
 }
 
 /** Mark one game abandoned. Returns false only when the id does not exist. */
@@ -112,9 +218,75 @@ export async function loadLobbyHistoryFromDb(
     .orderBy(asc(games.startedAt), asc(games.id));
   if (gameRows.length === 0) return [];
 
-  const playerRows = await db.select().from(gamePlayers)
-    .where(inArray(gamePlayers.gameId, gameRows.map((game) => game.id)))
-    .orderBy(asc(gamePlayers.gameId), asc(gamePlayers.seat));
+  const gameIds = gameRows.map((game) => game.id);
+  const [playerRows, eventRows, traceRows] = await Promise.all([
+    db.select().from(gamePlayers)
+      .where(inArray(gamePlayers.gameId, gameIds))
+      .orderBy(asc(gamePlayers.gameId), asc(gamePlayers.seat)),
+    db.select({ payload: events.payload }).from(events)
+      .where(inArray(events.gameId, gameIds))
+      .orderBy(asc(events.id)),
+    db.select({
+      gameId: traces.gameId,
+      playerId: traces.playerId,
+      prompt: traces.prompt,
+      reasoning: traces.reasoning,
+      answer: traces.answer,
+      usage: traces.usage,
+      createdAt: traces.createdAt,
+    }).from(traces)
+      .where(inArray(traces.gameId, gameIds))
+      .orderBy(asc(traces.createdAt), asc(traces.id)),
+  ]);
+  const budgetTracker = new BudgetMissTracker();
+  const persistedBudget = new Map<string, Record<string, LobbyModelBudgetMetrics>>();
+  const persistedBenchStates = new Map<string, Record<string, ModelBenchState>>();
+  for (const player of playerRows) {
+    budgetTracker.observe({
+      type: "player.joined",
+      gameId: player.gameId,
+      player: { id: player.playerId, name: player.name, modelId: player.modelSlug },
+      at: new Date(0).toISOString(),
+    });
+  }
+  for (const event of eventRows) {
+    budgetTracker.observe(event.payload);
+    if (event.payload.type === "game.ended") {
+      const budget = modelBudgetMetrics(event.payload.budget);
+      if (budget) persistedBudget.set(event.payload.gameId, budget);
+      if (event.payload.benchStates !== undefined) {
+        persistedBenchStates.set(event.payload.gameId, Object.fromEntries(
+          Object.entries(event.payload.benchStates).flatMap(([slug, state]) => (
+            isModelBenchState(state) ? [[slug, state] as const] : []
+          )),
+        ));
+      }
+    }
+  }
+  for (const trace of traceRows) {
+    const stored = trace.usage ?? {};
+    const purpose = stored["purpose"];
+    const budgetMiss = stored["budgetMiss"] === true;
+    const attempts = Array.isArray(stored["attempts"])
+      ? stored["attempts"] as TraceEvent["attempts"]
+      : undefined;
+    const { attempts: _attempts, purpose: _purpose, budgetMiss: _budgetMiss, ...usage } = stored;
+    budgetTracker.observe({
+      type: "trace.completed",
+      gameId: trace.gameId,
+      playerId: trace.playerId,
+      ...(purpose === "answer" || purpose === "vote" || purpose === "thriplash" ? { purpose } : {}),
+      prompt: trace.prompt,
+      reasoning: trace.reasoning,
+      answer: trace.answer,
+      ...(budgetMiss ? { budgetMiss: true } : {}),
+      ...(attempts === undefined ? {} : { attempts }),
+      ...(Object.keys(usage).length === 0 ? {} : {
+        usage: usage as NonNullable<TraceEvent["usage"]>,
+      }),
+      at: trace.createdAt.toISOString(),
+    });
+  }
   return gameRows.map((game) => {
     const players = playerRows.filter((player) => player.gameId === game.id);
     const observedFromPlayers = Object.fromEntries(players.flatMap((player) => (
@@ -150,6 +322,12 @@ export async function loadLobbyHistoryFromDb(
           : { totalScore: player.observedScore ?? player.totalScore! }),
       })),
       ...(finalScores === null ? {} : { finalScores }),
+      ...(Object.keys(persistedBudget.get(game.id) ?? budgetTracker.metrics(game.id)).length === 0
+        ? {}
+        : { budget: persistedBudget.get(game.id) ?? budgetTracker.metrics(game.id) }),
+      ...(persistedBenchStates.has(game.id)
+        ? { benchStates: persistedBenchStates.get(game.id)! }
+        : {}),
     };
   });
 }

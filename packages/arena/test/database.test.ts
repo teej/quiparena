@@ -7,8 +7,13 @@ import {
   abandonGame,
   abandonStaleGames,
   backfillCompletedGameScores,
+  clearModelBenchState,
+  loadLobbyHistoryFromDb,
+  loadModelBenchStates,
+  persistModelBenchStates,
+  syncRosterModels,
 } from "../src/db/operations.js";
-import { answers, gamePlayers, games, matchups, votes } from "../src/db/schema.js";
+import { answers, gamePlayers, games, matchups, models, votes } from "../src/db/schema.js";
 
 describe("database schema and migrations", () => {
   it("applies the generated Postgres migration to in-memory PGlite", async () => {
@@ -85,6 +90,63 @@ describe("database schema and migrations", () => {
       expect((await db.select().from(games))[0]?.observedScores).toEqual([
         { name: "Model", score: 123 },
       ]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("persists and clears automatic bench state without changing manual enabled state", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    try {
+      const roster = [{
+        slug: "test/slow",
+        displayName: "Slow",
+        lab: "Test",
+        released: "2026-09-02",
+        reasoning: null,
+        temperature: null,
+        enabled: false,
+        disabledReason: "manual operator choice",
+        rationale: "test",
+      }];
+      await syncRosterModels(db, roster);
+      await persistModelBenchStates(db, ["test/slow"], new Map([["test/slow", {
+        benched: true,
+        gamesRemaining: 10,
+        consecutiveSlowGames: 0,
+        reason: "3 budget misses",
+      }]]));
+
+      expect((await loadModelBenchStates(db)).get("test/slow")).toMatchObject({
+        benched: true,
+        gamesRemaining: 10,
+      });
+      expect((await db.select().from(models))[0]?.enabled).toBe(false);
+      await expect(clearModelBenchState(db, "test/slow")).resolves.toBe(true);
+      expect((await loadModelBenchStates(db)).has("test/slow")).toBe(false);
+      expect((await db.select().from(models))[0]?.enabled).toBe(false);
+
+      await new Recorder(db).record({
+        type: "game.ended",
+        gameId: "ingested-bench",
+        benchStates: {
+          "test/slow": {
+            benched: true,
+            gamesRemaining: 9,
+            consecutiveSlowGames: 0,
+            reason: "ingested runtime bench",
+          },
+        },
+        budget: { "test/slow": { misses: 3, answerLatenciesMs: [15_010] } },
+        at: "2026-09-02T12:00:00Z",
+      });
+      expect((await loadModelBenchStates(db)).get("test/slow")).toMatchObject({
+        benched: true,
+        gamesRemaining: 9,
+        reason: "ingested runtime bench",
+      });
+      expect((await loadLobbyHistoryFromDb(db)).find((game) => game.id === "ingested-bench")?.budget)
+        .toEqual({ "test/slow": { misses: 3, answerLatenciesMs: [15_010] } });
     } finally {
       await db.close();
     }

@@ -8,7 +8,12 @@ import WebSocket, { WebSocketServer } from "ws";
 
 import { EcastConnection } from "../src/ecast.js";
 import type { Player } from "../src/player.js";
-import { Quiplash3Seat } from "../src/quiplash3.js";
+import {
+  DEFAULT_ANSWER_TIMEOUT_MS,
+  DEFAULT_THRIPLASH_TIMEOUT_MS,
+  DEFAULT_VOTE_TIMEOUT_MS,
+  Quiplash3Seat,
+} from "../src/quiplash3.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/rec1-lobby.jsonl", import.meta.url));
 const statesPath = fileURLToPath(new URL("./fixtures/quiplash3-controller-states.json", import.meta.url));
@@ -21,6 +26,12 @@ afterEach(async () => {
 });
 
 describe("Quiplash3Seat", () => {
+  it("defaults to independent 15s answer/Thriplash and 10s vote budgets", () => {
+    expect(DEFAULT_ANSWER_TIMEOUT_MS).toBe(15_000);
+    expect(DEFAULT_THRIPLASH_TIMEOUT_MS).toBe(15_000);
+    expect(DEFAULT_VOTE_TIMEOUT_MS).toBe(10_000);
+  });
+
   it("sends VIP start, normal answers, runtime vote ids, and retried Thriplash lines", async () => {
     const welcome = await recordedWelcome();
     const states = await controllerStates();
@@ -315,6 +326,7 @@ describe("Quiplash3Seat", () => {
     expect(events.find((event) => event.type === "answer.submitted")).toMatchObject({
       answer: "⁇",
       blank: true,
+      budgetMiss: true,
     });
   });
 

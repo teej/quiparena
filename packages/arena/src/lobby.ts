@@ -22,7 +22,15 @@ export interface LobbyGameHistory {
   failures?: readonly string[];
   failedModels?: readonly string[];
   failedModelSlugs?: readonly string[];
+  budget?: Readonly<Record<string, LobbyModelBudgetMetrics>>;
+  /** Durable post-game snapshot used when seeding a worker through the archive API. */
+  benchStates?: Readonly<Record<string, ModelBenchState>>;
   status?: string;
+}
+
+export interface LobbyModelBudgetMetrics {
+  misses: number;
+  answerLatenciesMs: readonly number[];
 }
 
 export interface LobbyModelAttempt {
@@ -33,10 +41,30 @@ export interface LobbyModelAttempt {
 export type LobbyHistoryEntry = LobbyGameHistory | LobbyModelAttempt;
 
 export interface BenchRule {
-  /** Bench after this many failures in the model's latest appearances. */
-  consecutiveFailures: number;
-  /** Only inspect this many recent history entries. */
-  lookback: number;
+  /** A game triggers a bench when misses exceed this value. */
+  maxBudgetMisses: number;
+  /** Answer/Thriplash p50 is slow when it exceeds this budget. */
+  answerBudgetMs: number;
+  /** Number of consecutive slow appearances that trigger a bench. */
+  consecutiveSlowGames: number;
+  /** Number of subsequent arena games for which a model is excluded. */
+  benchGames: number;
+}
+
+export interface ModelBenchState {
+  benched: boolean;
+  gamesRemaining: number;
+  consecutiveSlowGames: number;
+  reason?: string;
+  benchedAtGameId?: string;
+  updatedAtGameId?: string;
+}
+
+export interface BenchStateChange {
+  modelSlug: string;
+  action: "benched" | "unbenched";
+  reason: string;
+  gamesRemaining: number;
 }
 
 export interface PickNextLobbyOptions<T extends LobbyRosterModel> {
@@ -46,6 +74,7 @@ export interface PickNextLobbyOptions<T extends LobbyRosterModel> {
   size?: number;
   keep?: number;
   bench?: false | Partial<BenchRule>;
+  benchStates?: ReadonlyMap<string, ModelBenchState> | Readonly<Record<string, ModelBenchState>>;
   rng?: () => number;
   /** Alias for rng, matching the model-player injection convention. */
   random?: () => number;
@@ -62,7 +91,12 @@ export interface LobbyPickRationale<T extends LobbyRosterModel> {
   fresh?: boolean;
 }
 
-const DEFAULT_BENCH: BenchRule = { consecutiveFailures: 2, lookback: 6 };
+export const DEFAULT_BENCH_RULE: BenchRule = {
+  maxBudgetMisses: 2,
+  answerBudgetMs: 15_000,
+  consecutiveSlowGames: 2,
+  benchGames: 10,
+};
 
 function rosterModels<T extends LobbyRosterModel>(
   roster: readonly T[] | { models: readonly T[] },
@@ -82,12 +116,6 @@ function playerId(player: string | LobbyPlayerResult): string | undefined {
 
 function participants(entry: LobbyGameHistory): Set<string> {
   return new Set(entry.players.map(playerSlug).filter((slug): slug is string => Boolean(slug)));
-}
-
-function failedModels(entry: LobbyGameHistory): Set<string> {
-  const explicit = entry.failures ?? entry.failedModels ?? entry.failedModelSlugs;
-  if (explicit) return new Set(explicit);
-  return entry.status === "failed" ? participants(entry) : new Set();
 }
 
 function entryIdentity(entry: LobbyGameHistory): string | LobbyGameHistory {
@@ -115,27 +143,123 @@ function gamesPlayed(history: readonly LobbyHistoryEntry[]): Map<string, number>
   return counts;
 }
 
-function isBenched(
-  slug: string,
-  history: readonly LobbyHistoryEntry[],
-  rule: BenchRule,
-): boolean {
-  if (rule.consecutiveFailures < 1 || rule.lookback < 1) return false;
-  let failures = 0;
-  const recent = history.slice(-rule.lookback).reverse();
-  for (const entry of recent) {
-    if ("modelSlug" in entry) {
-      if (entry.modelSlug !== slug) continue;
-      if (entry.success) break;
-      failures += 1;
-    } else {
-      if (!participants(entry).has(slug)) continue;
-      if (!failedModels(entry).has(slug)) break;
-      failures += 1;
-    }
-    if (failures >= rule.consecutiveFailures) return true;
+function percentile50(values: readonly number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(sorted.length / 2) - 1];
+}
+
+function stateMap(
+  states: ReadonlyMap<string, ModelBenchState> | Readonly<Record<string, ModelBenchState>>,
+): Map<string, ModelBenchState> {
+  return states instanceof Map
+    ? new Map([...states].map(([slug, state]) => [slug, { ...state }]))
+    : new Map(Object.entries(states).map(([slug, state]) => [slug, { ...state }]));
+}
+
+/** Advance persisted slow-model state by one completed game. */
+export function advanceBenchStates(
+  states: ReadonlyMap<string, ModelBenchState> | Readonly<Record<string, ModelBenchState>>,
+  game: LobbyGameHistory,
+  partialRule: Partial<BenchRule> = {},
+): { states: Map<string, ModelBenchState>; changes: BenchStateChange[] } {
+  const rule = { ...DEFAULT_BENCH_RULE, ...partialRule };
+  if (!Number.isInteger(rule.maxBudgetMisses) || rule.maxBudgetMisses < 0) {
+    throw new RangeError("maxBudgetMisses must be a non-negative integer");
   }
-  return false;
+  if (!Number.isFinite(rule.answerBudgetMs) || rule.answerBudgetMs <= 0) {
+    throw new RangeError("answerBudgetMs must be positive");
+  }
+  if (!Number.isInteger(rule.consecutiveSlowGames) || rule.consecutiveSlowGames < 1) {
+    throw new RangeError("consecutiveSlowGames must be a positive integer");
+  }
+  if (!Number.isInteger(rule.benchGames) || rule.benchGames < 1) {
+    throw new RangeError("benchGames must be a positive integer");
+  }
+
+  const next = stateMap(states);
+  const changes: BenchStateChange[] = [];
+  const benchedDuringGame = new Set<string>();
+  for (const [slug, state] of next) {
+    if (!state.benched) continue;
+    benchedDuringGame.add(slug);
+    const gamesRemaining = Math.max(0, state.gamesRemaining - 1);
+    if (gamesRemaining > 0) {
+      next.set(slug, {
+        ...state,
+        gamesRemaining,
+        ...(game.id === undefined ? {} : { updatedAtGameId: game.id }),
+      });
+      continue;
+    }
+    next.delete(slug);
+    changes.push({
+      modelSlug: slug,
+      action: "unbenched",
+      reason: `served ${rule.benchGames}-game bench`,
+      gamesRemaining: 0,
+    });
+  }
+
+  for (const slug of participants(game)) {
+    if (benchedDuringGame.has(slug)) continue;
+    const metrics = game.budget?.[slug] ?? { misses: 0, answerLatenciesMs: [] };
+    const p50 = percentile50(metrics.answerLatenciesMs);
+    const previousSlowGames = next.get(slug)?.consecutiveSlowGames ?? 0;
+    const consecutiveSlowGames = p50 !== undefined && p50 > rule.answerBudgetMs
+      ? previousSlowGames + 1
+      : 0;
+
+    let reason: string | undefined;
+    if (metrics.misses > rule.maxBudgetMisses) {
+      reason = `${metrics.misses} budget misses in game ${game.id ?? "unknown"} (limit ${rule.maxBudgetMisses})`;
+    } else if (consecutiveSlowGames >= rule.consecutiveSlowGames) {
+      reason = `p50 answer latency ${p50}ms exceeded ${rule.answerBudgetMs}ms in ${consecutiveSlowGames} consecutive games`;
+    }
+
+    if (reason) {
+      next.set(slug, {
+        benched: true,
+        gamesRemaining: rule.benchGames,
+        consecutiveSlowGames: 0,
+        reason,
+        ...(game.id === undefined ? {} : {
+          benchedAtGameId: game.id,
+          updatedAtGameId: game.id,
+        }),
+      });
+      changes.push({
+        modelSlug: slug,
+        action: "benched",
+        reason,
+        gamesRemaining: rule.benchGames,
+      });
+    } else if (consecutiveSlowGames > 0) {
+      next.set(slug, {
+        benched: false,
+        gamesRemaining: 0,
+        consecutiveSlowGames,
+        ...(game.id === undefined ? {} : { updatedAtGameId: game.id }),
+      });
+    } else {
+      next.delete(slug);
+    }
+  }
+  return { states: next, changes };
+}
+
+export function deriveBenchStates(
+  history: readonly LobbyHistoryEntry[],
+  rule: Partial<BenchRule> = {},
+): Map<string, ModelBenchState> {
+  let states = new Map<string, ModelBenchState>();
+  for (const entry of history) {
+    if (!("players" in entry)) continue;
+    states = entry.benchStates === undefined
+      ? advanceBenchStates(states, entry, rule).states
+      : stateMap(entry.benchStates);
+  }
+  return states;
 }
 
 interface RankedFinisher<T extends LobbyRosterModel> {
@@ -204,10 +328,13 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
   const history = withLastGame(options.history, options.lastGame);
   const bench = options.bench === false
     ? null
-    : { ...DEFAULT_BENCH, ...options.bench };
-  const benched = new Set(
-    bench ? enabled.filter((model) => isBenched(model.slug, history, bench)).map((model) => model.slug) : [],
-  );
+    : { ...DEFAULT_BENCH_RULE, ...options.bench };
+  const benchStates = bench === null
+    ? new Map<string, ModelBenchState>()
+    : options.benchStates === undefined
+      ? deriveBenchStates(history, bench)
+      : stateMap(options.benchStates);
+  const benched = new Set([...benchStates].flatMap(([slug, state]) => state.benched ? [slug] : []));
   const eligible = enabled.filter((model) => !benched.has(model.slug));
   if (eligible.length < size) {
     throw new Error(`Cannot fill ${size} seats: only ${eligible.length} enabled, non-benched models`);

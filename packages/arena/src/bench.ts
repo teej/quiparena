@@ -25,7 +25,7 @@ type TraceEvent = Extract<StreamEvent, { type: "trace.completed" }>;
 
 interface BenchOptions {
   modelSlugs?: Set<string>;
-  deadlineMs: number;
+  budgetMs: number;
 }
 
 interface OperationResult {
@@ -35,6 +35,7 @@ interface OperationResult {
   reasoningTokens: number;
   costUsd: number;
   fallbackUsed: boolean;
+  budgetMiss: boolean;
 }
 
 interface ModelResult {
@@ -46,13 +47,13 @@ interface ModelResult {
 function parsePositiveSeconds(value: string | undefined): number {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new Error(`--deadline-s must be a positive number, received ${JSON.stringify(value)}`);
+    throw new Error(`--budget-s must be a positive number, received ${JSON.stringify(value)}`);
   }
   return Math.round(seconds * 1_000);
 }
 
 function parseOptions(args: string[]): BenchOptions {
-  let deadlineMs = 60_000;
+  let budgetMs = 15_000;
   let modelSlugs: Set<string> | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -65,17 +66,18 @@ function parseOptions(args: string[]): BenchOptions {
       modelSlugs = new Set(slugs);
       continue;
     }
-    if (argument === "--deadline-s" || argument?.startsWith("--deadline-s=")) {
-      const value = argument === "--deadline-s"
+    if (argument === "--budget-s" || argument?.startsWith("--budget-s=")
+      || argument === "--deadline-s" || argument?.startsWith("--deadline-s=")) {
+      const value = argument === "--budget-s" || argument === "--deadline-s"
         ? args[index += 1]
-        : argument.slice("--deadline-s=".length);
-      deadlineMs = parsePositiveSeconds(value);
+        : argument.slice(argument.indexOf("=") + 1);
+      budgetMs = parsePositiveSeconds(value);
       continue;
     }
     throw new Error(`Unknown argument: ${argument}`);
   }
 
-  return { deadlineMs, ...(modelSlugs === undefined ? {} : { modelSlugs }) };
+  return { budgetMs, ...(modelSlugs === undefined ? {} : { modelSlugs }) };
 }
 
 function percentile(values: readonly number[], fraction: number): number {
@@ -100,12 +102,13 @@ function operationFromTrace(
     reasoningTokens: trace.usage?.reasoningTokens ?? 0,
     costUsd: trace.usage?.costUsd ?? 0,
     fallbackUsed,
+    budgetMiss: trace.budgetMiss === true,
   };
 }
 
 async function benchModel(
   entry: RosterModel,
-  deadlineMs: number,
+  budgetMs: number,
   apiKey: string,
   reportCost: (cost: number) => void,
 ): Promise<ModelResult> {
@@ -122,6 +125,9 @@ async function benchModel(
     model: entry.slug,
     displayName: entry.displayName,
     ...(entry.reasoning === null ? {} : { reasoning: entry.reasoning }),
+    ...(entry.reasoningMandatory === undefined
+      ? {}
+      : { reasoningMandatory: entry.reasoningMandatory }),
     ...(entry.temperature === null ? {} : { temperature: entry.temperature }),
     apiKey,
     logger,
@@ -139,7 +145,7 @@ async function benchModel(
     const answer = await player.answer(fixture.prompt, {
       gameId: `bench-${entry.slug}-${promptIndex}`,
       round: 1,
-      deadlineMs: Date.now() + deadlineMs,
+      deadlineMs: Date.now() + budgetMs,
       maxLength: 45,
     });
     const answerTrace = traces[answerTraceIndex];
@@ -167,7 +173,7 @@ async function benchModel(
     await player.vote(fixture.prompt, [...fixture.voteOptions], {
       gameId: `bench-${entry.slug}-${promptIndex}`,
       round: 1,
-      deadlineMs: Date.now() + deadlineMs,
+      deadlineMs: Date.now() + budgetMs,
       maxLength: 45,
     });
     const voteTrace = traces[voteTraceIndex];
@@ -199,7 +205,19 @@ async function mapConcurrent<T, U>(
   return results;
 }
 
-function printTable(results: readonly ModelResult[]): void {
+function failedBudget(result: ModelResult, budgetMs: number): boolean {
+  if (result.skippedReason) return true;
+  const misses = result.operations.filter((operation) => (
+    operation.budgetMiss || operation.totalMs > budgetMs
+  )).length;
+  const answerP50 = percentile(
+    result.operations.filter((operation) => operation.kind === "answer").map((operation) => operation.totalMs),
+    0.5,
+  );
+  return misses > 2 || answerP50 > budgetMs;
+}
+
+function printTable(results: readonly ModelResult[], budgetMs: number): void {
   const rows = results.map((result) => {
     const totalTimes = result.operations.map((operation) => operation.totalMs);
     const firstTokenTimes = result.operations
@@ -210,7 +228,9 @@ function printTable(results: readonly ModelResult[]): void {
       0,
     );
     const costUsd = result.operations.reduce((sum, operation) => sum + operation.costUsd, 0);
-    const fallbacks = result.operations.filter((operation) => operation.fallbackUsed).length;
+    const misses = result.operations.filter((operation) => (
+      operation.budgetMiss || operation.totalMs > budgetMs
+    )).length;
     return {
       model: result.entry.slug,
       "p50 total ms": result.skippedReason ? "ERROR" : percentile(totalTimes, 0.5),
@@ -218,7 +238,10 @@ function printTable(results: readonly ModelResult[]): void {
       "p50 first-token ms": firstTokenTimes.length === 0 ? "—" : percentile(firstTokenTimes, 0.5),
       "reasoning tokens": reasoningTokens,
       "cost USD": costUsd.toFixed(6),
-      fallbacks: `${fallbacks}/${result.operations.length}`,
+      "miss rate": result.operations.length === 0
+        ? "—"
+        : `${misses}/${result.operations.length} (${(100 * misses / result.operations.length).toFixed(0)}%)`,
+      result: failedBudget(result, budgetMs) ? "FAIL" : "PASS",
       ...(result.skippedReason === undefined ? {} : { note: result.skippedReason.slice(0, 80) }),
     };
   });
@@ -245,11 +268,16 @@ async function main(): Promise<void> {
     if (observedCostUsd >= SPEND_CAP_USD) {
       return { entry, operations: [], skippedReason: `spend cap $${SPEND_CAP_USD} reached` };
     }
-    return benchModel(entry, options.deadlineMs, apiKey, (cost) => {
+    return benchModel(entry, options.budgetMs, apiKey, (cost) => {
       observedCostUsd += cost;
     });
   });
-  printTable(results);
+  printTable(results, options.budgetMs);
+  const wouldBench = results.filter((result) => failedBudget(result, options.budgetMs));
+  console.log(
+    `Would be benched at ${options.budgetMs / 1_000}s: `
+    + (wouldBench.length === 0 ? "none" : wouldBench.map((result) => result.entry.slug).join(", ")),
+  );
   console.log(`Observed cost: $${observedCostUsd.toFixed(6)} (cap $${SPEND_CAP_USD.toFixed(2)})`);
 }
 

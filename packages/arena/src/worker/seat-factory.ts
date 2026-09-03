@@ -43,6 +43,9 @@ export function buildModelPlayer(
     displayName,
     playerId: entry.slug,
     ...(entry.reasoning === null ? {} : { reasoning: entry.reasoning }),
+    ...(entry.reasoningMandatory === undefined
+      ? {}
+      : { reasoningMandatory: entry.reasoningMandatory }),
     ...(entry.temperature === null ? {} : { temperature: entry.temperature }),
     ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
     ...options.config,
@@ -180,6 +183,13 @@ export function buildHarnessSeat(options: CreateSeatOptions, bus: EventPublisher
   });
   const seat = new Quiplash3Seat(connection, player, {
     gameId: options.gameId,
+    ...(options.answerBudgetMs === undefined ? {} : {
+      defaultAnswerTimeoutMs: options.answerBudgetMs,
+      defaultThriplashTimeoutMs: options.answerBudgetMs,
+    }),
+    ...(options.voteBudgetMs === undefined ? {} : {
+      defaultVoteTimeoutMs: options.voteBudgetMs,
+    }),
     postGameAction: options.postGameAction,
     onEvent: (event: AnyEvent) => {
       if (event.type === "player.joined") playerId = event.player.id;

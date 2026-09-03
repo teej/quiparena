@@ -38,6 +38,12 @@ describe("Bradley-Terry ratings", () => {
         lab: "lab",
         enabled: true,
         config: {},
+        ...(model.slug === "lab/dominant" ? { benchState: {
+          benched: true,
+          gamesRemaining: 7,
+          consecutiveSlowGames: 0,
+          reason: "3 budget misses",
+        } } : {}),
       })));
       await db.insert(games).values({
         id: "rating-game",
@@ -133,6 +139,8 @@ describe("Bradley-Terry ratings", () => {
       expect(board[0]).toMatchObject({
         modelSlug: "lab/dominant",
         displayName: "dominant",
+        benched: true,
+        benchReason: "3 budget misses",
         stats: { games: 1, wins: 1, avgPlacement: 1, avgPoints: 4_000 },
       });
       expect(board[0]!.lower95).toBeLessThan(board[0]!.upper95);

@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { GameEvent } from "@quiparena/core";
+import type { ModelBenchState } from "../lobby.js";
 
 export type JsonObject = Record<string, unknown>;
 export type ScoreMap = Record<string, number>;
@@ -37,6 +38,7 @@ export const models = pgTable("models", {
   displayName: varchar("display_name", { length: 12 }).notNull(),
   lab: text("lab").notNull(),
   enabled: boolean("enabled").notNull().default(true),
+  benchState: jsonb("bench_state").$type<ModelBenchState>(),
   config: jsonb("config").$type<JsonObject>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
 }, (table) => [

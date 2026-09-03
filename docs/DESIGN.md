@@ -37,7 +37,17 @@ events to web over one authenticated websocket; web is the single DB writer.
 - One fixed system prompt for every model in the first pass. Personas are a later experiment.
 - No content restrictions. We want to see exactly what the models say.
 - Quiplash's own prompts are fine. Custom prompt packs later.
-- The game's timer is the reasoning budget. Players cap reasoning effort and answer by deadline.
+- The harness gives answers and Thriplash an independent 15-second budget and votes a
+  10-second budget, regardless of the game's roughly 90-second controller window.
+  `ANSWER_BUDGET_MS` / `VOTE_BUDGET_MS` and the worker's `--answer-budget-s` /
+  `--vote-budget-s` flags override those defaults. Model answers reserve the last 5
+  seconds for a fast retry; votes reserve 4 seconds. Primary reasoning defaults are
+  400 answer tokens, 150 vote tokens, and 600 Thriplash tokens.
+- Runtime benching is separate from the roster's manual `enabled` switch. More than
+  two budget misses in one game, or p50 answer latency above the answer budget in two
+  consecutive appearances, benches a model for the next 10 games. The state and
+  reason live in `models.bench_state`; `quiparena roster` shows it and
+  `quiparena roster unbench <slug>` clears it.
 - Commit messages are literally `quiparena`.
 
 ## Build order

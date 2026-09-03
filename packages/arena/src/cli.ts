@@ -9,7 +9,12 @@ import { ScriptedPlayer, type Player, type PlayerContext } from "@quiparena/jack
 import { desc } from "drizzle-orm";
 
 import { openDb, type ArenaDatabase } from "./db/client.js";
-import { abandonGame } from "./db/operations.js";
+import {
+  abandonGame,
+  clearModelBenchState,
+  loadModelBenchStates,
+  syncRosterModels,
+} from "./db/operations.js";
 import { games } from "./db/schema.js";
 import { runHostAgent } from "./host-agent/host-agent.js";
 import { captureFinalScores } from "./host-agent/read-scores.js";
@@ -31,7 +36,7 @@ function usage(): string {
     "Usage:",
     "  quiparena ask --model <slug> --prompt <text> [--deadline-s 30]",
     "  quiparena vote --model <slug> --prompt <text> --a <answer> --b <answer> [--deadline-s 30]",
-    "  quiparena roster",
+    "  quiparena roster [unbench <slug>]",
     "  quiparena db migrate",
     "  quiparena ratings compute [--bootstrap 200] [--backfill-audience]",
     "  quiparena ratings show [--population blended]",
@@ -39,8 +44,8 @@ function usage(): string {
     "  quiparena games show <id>",
     "  quiparena games abandon <id>",
     "  quiparena games capture-scores <id> --image PATH [--model slug]",
-    "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--record DIR] [--db] [--ingest URL]",
-    "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL] [--stop-file PATH] [--max-games N]",
+    "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--answer-budget-s 15] [--vote-budget-s 10] [--record DIR] [--db] [--ingest URL]",
+    "  quiparena loop --room CODE [--room-file PATH] [--answer-budget-s 15] [--vote-budget-s 10] [--db] [--ingest URL] [--stop-file PATH] [--max-games N]",
     "  quiparena host-agent --room-file PATH [--interval-s 15] [--once] [--image PATH]",
     "  quiparena dry-run [--players 8]",
     "",
@@ -80,6 +85,13 @@ function deadlineMs(value: string | undefined): number {
   return Date.now() + seconds * 1_000;
 }
 
+function optionalBudgetMs(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`${flag} must be a positive number`);
+  return Math.round(seconds * 1_000);
+}
+
 function displayNameFor(slug: string): string {
   const segment = slug.split("/").at(-1) ?? "Model";
   const name = segment.replace(/[^a-z0-9.-]+/gi, " ").trim();
@@ -101,6 +113,9 @@ function playerConfig(slug: string, roster: ModelRoster): ModelPlayerConfig {
     },
     apiKey,
     ...(entry?.reasoning == null ? {} : { reasoning: entry.reasoning }),
+    ...(entry?.reasoningMandatory === undefined
+      ? {}
+      : { reasoningMandatory: entry.reasoningMandatory }),
     ...(entry?.temperature == null ? {} : { temperature: entry.temperature }),
   };
 }
@@ -175,16 +190,38 @@ async function runVote(args: string[]): Promise<void> {
 }
 
 async function runRoster(args: string[]): Promise<void> {
-  parseArgs({ args, options: {}, strict: true });
   const roster = await loadRoster();
+  const [command, slug, ...extra] = args;
+  if (command === "unbench") {
+    if (!slug || extra.length > 0) throw new Error("Usage: quiparena roster unbench <slug>");
+    if (!findRosterModel(roster, slug)) throw new Error(`Model is not in packages/arena/models.json: ${slug}`);
+    await usingDb(async (db) => {
+      await syncRosterModels(db, roster.models);
+      await clearModelBenchState(db, slug);
+    });
+    console.log(`Cleared automatic bench state for ${slug}; enabled remains controlled by models.json.`);
+    return;
+  }
+  parseArgs({ args, options: {}, strict: true });
   const report = await validateRoster(roster);
+  const benchStates = await usingDb(loadModelBenchStates);
   console.log(`${roster.reviewStatus}; catalog checked ${roster.catalogCheckedAt}`);
   for (const entry of roster.models) {
     const unknown = report.unknown.includes(entry.slug);
     const unsupported = report.unsupported.find((item) => item.slug === entry.slug);
     const status = unknown ? "unknown" : unsupported ? "unsupported" : "ok";
-    const suffix = unsupported ? ` — ${unsupported.reasons.join("; ")}` : "";
-    console.log(`[${status}] ${entry.slug} (${entry.displayName}, ${entry.released})${suffix}`);
+    const benchState = benchStates.get(entry.slug);
+    const suffix = [
+      ...(unsupported ? [unsupported.reasons.join("; ")] : []),
+      ...(benchState?.benched
+        ? [`BENCHED (${benchState.gamesRemaining} games): ${benchState.reason ?? "automatic runtime bench"}`]
+        : []),
+      ...(!entry.enabled ? [`disabled manually: ${entry.disabledReason ?? "no reason"}`] : []),
+    ];
+    console.log(
+      `[${status}] ${entry.slug} (${entry.displayName}, ${entry.released})`
+      + (suffix.length === 0 ? "" : ` — ${suffix.join("; ")}`),
+    );
   }
   console.log(`Checked ${report.checked} roster entries against ${report.catalogSize} OpenRouter models.`);
   if (!report.ok) process.exitCode = 1;
@@ -435,6 +472,8 @@ async function runPlay(args: string[]): Promise<void> {
       record: { type: "string" },
       db: { type: "boolean" },
       ingest: { type: "string" },
+      "answer-budget-s": { type: "string" },
+      "vote-budget-s": { type: "string" },
     },
     strict: true,
   });
@@ -442,6 +481,8 @@ async function runPlay(args: string[]): Promise<void> {
   if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
   const roster = workerRoster(await loadRoster(), values.models, values.players);
   const recordDir = values.record === undefined ? undefined : resolveOptionPath(values.record);
+  const answerBudgetMs = optionalBudgetMs(values["answer-budget-s"], "--answer-budget-s");
+  const voteBudgetMs = optionalBudgetMs(values["vote-budget-s"], "--vote-budget-s");
   const bus = new WorkerEventBus();
   const live = compactLiveLog(bus);
   const sinks: WorkerSink[] = [];
@@ -462,6 +503,8 @@ async function runPlay(args: string[]): Promise<void> {
         roster,
         bus,
         signal: signal.signal,
+        ...(answerBudgetMs === undefined ? {} : { answerBudgetMs }),
+        ...(voteBudgetMs === undefined ? {} : { voteBudgetMs }),
         ...(recordDir === undefined ? {} : {
           recordDir,
           credentialsFile: join(recordDir, "credentials.json"),
@@ -486,6 +529,8 @@ async function runWorkerLoop(args: string[]): Promise<void> {
       ingest: { type: "string" },
       "stop-file": { type: "string" },
       "max-games": { type: "string" },
+      "answer-budget-s": { type: "string" },
+      "vote-budget-s": { type: "string" },
     },
     strict: true,
   });
@@ -493,6 +538,8 @@ async function runWorkerLoop(args: string[]): Promise<void> {
   if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
   const roster = (await loadRoster()).models;
   const maxGames = values["max-games"] === undefined ? undefined : Number(values["max-games"]);
+  const answerBudgetMs = optionalBudgetMs(values["answer-budget-s"], "--answer-budget-s");
+  const voteBudgetMs = optionalBudgetMs(values["vote-budget-s"], "--vote-budget-s");
   if (maxGames !== undefined && (!Number.isInteger(maxGames) || maxGames < 1)) {
     throw new Error("--max-games must be a positive integer");
   }
@@ -531,6 +578,8 @@ async function runWorkerLoop(args: string[]): Promise<void> {
       credentialsFile: DEFAULT_WORKER_CREDENTIALS,
       signal: signal.signal,
       stopRequested: signal.stopRequested,
+      ...(answerBudgetMs === undefined ? {} : { answerBudgetMs }),
+      ...(voteBudgetMs === undefined ? {} : { voteBudgetMs }),
       ...(values["room-file"] === undefined ? {} : { roomFile: resolveOptionPath(values["room-file"]) }),
       ...(values["stop-file"] === undefined ? {} : { stopFile: resolveOptionPath(values["stop-file"]) }),
       ...(maxGames === undefined ? {} : { maxGames }),
