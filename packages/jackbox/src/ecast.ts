@@ -46,7 +46,7 @@ export interface ReconnectPolicy {
 }
 
 export interface EcastConnectionOptions {
-  room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch">;
+  room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch" | "audienceEnabled">;
   name: string;
   userId?: string;
   credentials?: SeatCredentials;
@@ -174,7 +174,7 @@ export class EntityStore extends EventEmitter<EntityStoreEventMap> {
 }
 
 export class EcastConnection extends EventEmitter<EcastEventMap> {
-  readonly room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch">;
+  readonly room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch" | "audienceEnabled">;
   readonly name: string;
   readonly userId: string;
   readonly entities = new EntityStore();

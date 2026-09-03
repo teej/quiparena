@@ -18,6 +18,7 @@ const rosterModelSchema = z.object({
   released: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   reasoning: reasoningSchema.nullable(),
   reasoningMandatory: z.boolean().optional(),
+  reasoningPrompt: z.boolean().optional(),
   temperature: z.number().min(0).max(2).nullable(),
   enabled: z.boolean(),
   disabledReason: z.string().min(1).optional(),

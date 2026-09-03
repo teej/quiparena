@@ -29,6 +29,7 @@ interface VoteRequest {
 
 interface VoteObservation {
   voterId: string;
+  prompt: string;
   answerText: string;
   choiceKey?: string | number;
 }
@@ -111,6 +112,7 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
           accumulator.entries.set(event.playerId, {
             playerId: event.playerId,
             lines: tuple3(event.answer),
+            prompt: canonicalPrompt(event.prompt),
           });
         } else if ((event.round === 1 || event.round === 2) && typeof event.answer === "string") {
           const accumulator = this.#normalFor(event.round, event.prompt);
@@ -124,7 +126,10 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
       case "vote.requested": {
         const request = voteRequest(event.options, event.controller?.choices);
         if (event.round === 3) {
-          this.#thriplashFor(event.prompt).requests.set(event.playerId, request);
+          this.#thriplashFor(event.prompt).requests.set(
+            finalVoteKey(event.prompt, event.playerId),
+            request,
+          );
         } else {
           const accumulator = this.#findNormal(event.round, event.prompt, event.options)
             ?? this.#normalFor(event.round, event.prompt);
@@ -136,14 +141,16 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
       case "vote.cast": {
         const observation: VoteObservation = {
           voterId: event.playerId,
+          prompt: canonicalPrompt(event.prompt),
           answerText: event.answer ?? "",
           ...(event.choiceKey === undefined ? {} : { choiceKey: event.choiceKey }),
         };
         if (event.round === 3) {
           const accumulator = this.#thriplashFor(event.prompt);
-          const request = accumulator.requests.get(event.playerId);
+          const key = finalVoteKey(event.prompt, event.playerId);
+          const request = accumulator.requests.get(key);
           if (!observation.answerText) observation.answerText = selectedAnswer(request, event.choice, event.choiceKey);
-          accumulator.votes.set(event.playerId, observation);
+          accumulator.votes.set(key, observation);
         } else {
           const requestOptions = this.#normal.get(normalKey(event.round, event.prompt))
             ?.requests.get(event.playerId)?.options ?? [];
@@ -235,7 +242,19 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
 
     const final = this.#thriplash;
     if (!final || final.emitted || final.entries.size === 0) return;
-    if (!force && (playerCount === 0 || final.entries.size < playerCount || final.votes.size < playerCount)) return;
+    const groupSizes = new Map<string, number>();
+    for (const entry of final.entries.values()) {
+      const prompt = normalizedPrompt(entry.prompt ?? final.prompt);
+      groupSizes.set(prompt, (groupSizes.get(prompt) ?? 0) + 1);
+    }
+    const expectedVotes = groupSizes.size === 1 && [...groupSizes.values()][0] === playerCount
+      ? playerCount
+      : [...groupSizes.values()].reduce((sum, size) => sum + Math.max(0, playerCount - size), 0);
+    if (!force && (
+      playerCount === 0
+      || final.entries.size < playerCount
+      || final.votes.size < expectedVotes
+    )) return;
     final.emitted = true;
     this.#push({
       type: "thriplash.resolved",
@@ -291,7 +310,10 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
   #buildThriplash(accumulator: ThriplashAccumulator): Thriplash {
     const entries = this.#sortBySeat([...accumulator.entries.values()], (entry) => entry.playerId);
     const votes = [...accumulator.votes.values()].flatMap((observation): Vote[] => {
-      const choice = entries.findIndex((entry) => normalized(entry.lines.join("\n")) === normalized(observation.answerText));
+      const choice = entries.findIndex((entry) => (
+        normalizedPrompt(entry.prompt ?? accumulator.prompt) === normalizedPrompt(observation.prompt)
+        && normalized(entry.lines.join("\n")) === normalized(observation.answerText)
+      ));
       return choice < 0 ? [] : [{ voterId: observation.voterId, population: "player", choice }];
     });
     return { gameId: this.gameId, prompt: accumulator.prompt, entries, votes };
@@ -312,6 +334,10 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
 
 function normalKey(round: 1 | 2, prompt: string): string {
   return `${round}\u0000${normalizedPrompt(prompt)}`;
+}
+
+function finalVoteKey(prompt: string, playerId: string): string {
+  return `${normalizedPrompt(prompt)}\u0000${playerId}`;
 }
 
 function normalized(value: string): string {

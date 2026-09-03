@@ -53,9 +53,9 @@ const expectedGame: Game = {
       { playerId: "p2", lines: ["Moon curfew", "Ban beige", "Free geese"] },
     ],
     votes: [{ voterId: "p1", population: "player", choice: 1 }],
-    scores: { p1: 0, p2: 3_750 },
+    scores: { p1: 0, p2: 6_750 },
   },
-  finalScores: { p1: 1_250, p2: 6_250 },
+  finalScores: { p1: 1_250, p2: 9_250 },
 };
 
 const gameEvents: GameEvent[] = [

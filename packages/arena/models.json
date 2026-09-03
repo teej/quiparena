@@ -28,9 +28,10 @@
       "lab": "Anthropic",
       "released": "2026-09-01",
       "reasoning": { "maxTokens": 400 },
+      "reasoningPrompt": true,
       "temperature": null,
       "enabled": true,
-      "rationale": "Anthropic's newest top-end release, one day old at catalog review; mandatory reasoning."
+      "rationale": "Anthropic's newest top-end release. Its task-dependent reasoning skips short creative prompts unless explicitly prompted to reason."
     },
     {
       "slug": "anthropic/claude-sonnet-5",
@@ -38,9 +39,10 @@
       "lab": "Anthropic",
       "released": "2026-06-30",
       "reasoning": { "maxTokens": 400 },
+      "reasoningPrompt": true,
       "temperature": null,
       "enabled": true,
-      "rationale": "Anthropic's current value/performance tier; reasoning model."
+      "rationale": "Anthropic's current value/performance tier. Its adaptive reasoning skips short creative prompts unless explicitly prompted to reason."
     },
     {
       "slug": "google/gemini-3.1-pro-preview",

@@ -62,6 +62,7 @@ export async function syncRosterModels(
         ...(entry.reasoningMandatory === undefined
           ? {}
           : { reasoningMandatory: entry.reasoningMandatory }),
+        ...(entry.reasoningPrompt === undefined ? {} : { reasoningPrompt: entry.reasoningPrompt }),
         temperature: entry.temperature,
         rationale: entry.rationale,
         ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }),
@@ -78,6 +79,7 @@ export async function syncRosterModels(
           ...(entry.reasoningMandatory === undefined
             ? {}
             : { reasoningMandatory: entry.reasoningMandatory }),
+          ...(entry.reasoningPrompt === undefined ? {} : { reasoningPrompt: entry.reasoningPrompt }),
           temperature: entry.temperature,
           rationale: entry.rationale,
           ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }),
@@ -267,10 +269,19 @@ export async function loadLobbyHistoryFromDb(
     const stored = trace.usage ?? {};
     const purpose = stored["purpose"];
     const budgetMiss = stored["budgetMiss"] === true;
+    const reasoningVisible = typeof stored["reasoningVisible"] === "boolean"
+      ? stored["reasoningVisible"]
+      : undefined;
     const attempts = Array.isArray(stored["attempts"])
       ? stored["attempts"] as TraceEvent["attempts"]
       : undefined;
-    const { attempts: _attempts, purpose: _purpose, budgetMiss: _budgetMiss, ...usage } = stored;
+    const {
+      attempts: _attempts,
+      purpose: _purpose,
+      budgetMiss: _budgetMiss,
+      reasoningVisible: _reasoningVisible,
+      ...usage
+    } = stored;
     budgetTracker.observe({
       type: "trace.completed",
       gameId: trace.gameId,
@@ -278,6 +289,7 @@ export async function loadLobbyHistoryFromDb(
       ...(purpose === "answer" || purpose === "vote" || purpose === "thriplash" ? { purpose } : {}),
       prompt: trace.prompt,
       reasoning: trace.reasoning,
+      ...(reasoningVisible === undefined ? {} : { reasoningVisible }),
       answer: trace.answer,
       ...(budgetMiss ? { budgetMiss: true } : {}),
       ...(attempts === undefined ? {} : { attempts }),

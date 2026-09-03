@@ -94,7 +94,7 @@ export function createDemoFixture(seed = 20260902): DemoFixture {
     events.push(event);
   };
 
-  push({ type: "game.created", gameId, roomCode, at: at() });
+  push({ type: "game.created", gameId, roomCode, audienceEnabled: true, at: at() });
   for (const player of players) push({ type: "player.joined", gameId, player, at: at() });
   push({ type: "game.started", gameId, at: at() });
 

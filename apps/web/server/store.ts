@@ -65,9 +65,10 @@ export class InMemoryStore implements Store {
 
   async listGames(): Promise<GameSummary[]> {
     return [...this.records.values()]
-      .map((record) => liveStateToGame(record.state))
-      .filter((game): game is NonNullable<typeof game> => Boolean(game))
-      .map(toSummary)
+      .flatMap((record) => {
+        const game = liveStateToGame(record.state);
+        return game ? [toSummary(game, record.traces)] : [];
+      })
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   }
 
@@ -81,7 +82,7 @@ export class InMemoryStore implements Store {
 
   async leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse> {
     if (population === "audience") {
-      return { population, audienceVotingAvailable: false, entries: [] };
+      return { population, audienceVotingAvailable: false, audienceVotesInferred: false, entries: [] };
     }
     const games = [...this.records.values()]
       .map((record) => liveStateToGame(record.state))
@@ -89,6 +90,7 @@ export class InMemoryStore implements Store {
     return {
       population,
       audienceVotingAvailable: false,
+      audienceVotesInferred: false,
       entries: calculateLeaderboard(games.flatMap((game) => game.players), games, population),
     };
   }
@@ -106,11 +108,19 @@ export class InMemoryStore implements Store {
   }
 }
 
-function toSummary(game: NonNullable<ReturnType<typeof liveStateToGame>>): GameSummary {
+function toSummary(
+  game: NonNullable<ReturnType<typeof liveStateToGame>>,
+  traces: ArchivedGame["traces"],
+): GameSummary {
   const scores = Object.entries(game.observedScores ?? game.finalScores ?? {})
     .sort((left, right) => right[1] - left[1]);
   const [top] = scores;
-  const winner = top ? (game.players.find((player) => player.id === top[0]) ?? null) : null;
+  const observedWinnerId = Object.entries(game.observedPlacements ?? {})
+    .find(([, placement]) => placement === 1)?.[0];
+  const winner = (observedWinnerId
+    ? game.players.find((player) => player.id === observedWinnerId)
+    : undefined)
+    ?? (top ? (game.players.find((player) => player.id === top[0]) ?? null) : null);
   return {
     id: game.id,
     roomCode: game.roomCode,
@@ -121,6 +131,7 @@ function toSummary(game: NonNullable<ReturnType<typeof liveStateToGame>>): GameS
     matchupCount: game.matchups.length,
     winner,
     topScore: top?.[1] ?? null,
+    totalCostUsd: Object.values(traces).flat().reduce((sum, trace) => sum + (trace.usage?.costUsd ?? 0), 0),
   };
 }
 
@@ -220,6 +231,8 @@ function calculateLeaderboard(
         modelId: entry.player.modelId ?? entry.player.id,
         name: entry.player.name,
         lab: labForModel(entry.player.modelId),
+        benched: false,
+        benchReason: null,
         rating: Math.round(entry.rating),
         intervalLow: Math.round(entry.rating - margin),
         intervalHigh: Math.round(entry.rating + margin),

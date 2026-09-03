@@ -37,11 +37,16 @@ export function TvPage() {
   const players = state.playerOrder.map((id) => state.players[id]).filter((player) => player !== undefined);
   return (
     <main className="tv" style={{ "--tv-scale": scale } as CSSProperties}>
+      <aside className="tv__join" aria-label={`Room code ${state.roomCode ?? "unavailable"}`}>
+        <span className="tv__join-label">room code</span>
+        <strong className="tv__join-code">{state.roomCode ?? "----"}</strong>
+        {state.audienceEnabled && <span className="tv__join-copy">join the audience at jackbox.tv</span>}
+      </aside>
       <section className="tv__roster">
         <header className="tv__head">
           <span className="wordmark">quiparena</span>
           <span className="tv__room">
-            {state.roomCode ?? "----"}<span className="sep" aria-hidden="true">/</span>round {state.round ?? "-"} of 3
+            round {state.round ?? "-"} of 3
           </span>
         </header>
         <ol className="tv__players">

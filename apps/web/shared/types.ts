@@ -32,6 +32,8 @@ export interface LivePlayerState {
   activity: PlayerActivity;
   prompt: string | null;
   reasoning: string;
+  reasoningVisible: boolean | null;
+  attempts: NonNullable<Extract<StreamEvent, { type: "trace.completed" }>["attempts"]>;
   draft: string | null;
   answer: string | [string, string, string] | null;
   vote: PlayerVoteState | null;
@@ -41,6 +43,7 @@ export interface AnswerTrace {
   playerId: string;
   prompt: string;
   reasoning: string;
+  reasoningVisible?: boolean;
   answer: string;
   usage?: Extract<StreamEvent, { type: "trace.completed" }>["usage"];
   attempts?: Extract<StreamEvent, { type: "trace.completed" }>["attempts"];
@@ -60,6 +63,7 @@ export type LivePhase = "waiting" | "playing" | "voting" | "ended" | "error";
 export interface LiveState {
   gameId: string | null;
   roomCode: string | null;
+  audienceEnabled: boolean | null;
   startedAt: string | null;
   endedAt: string | null;
   updatedAt: string | null;
@@ -87,6 +91,7 @@ export interface GameSummary {
   matchupCount: number;
   winner: PlayerRef | null;
   topScore: number | null;
+  totalCostUsd: number;
 }
 
 export interface ArchivedGame {
@@ -101,6 +106,8 @@ export interface LeaderboardEntry {
   modelId: string;
   name: string;
   lab: string;
+  benched: boolean;
+  benchReason: string | null;
   rating: number;
   intervalLow: number;
   intervalHigh: number;
@@ -116,5 +123,6 @@ export interface LeaderboardEntry {
 export interface LeaderboardResponse {
   population: LeaderboardPopulation;
   audienceVotingAvailable: boolean;
+  audienceVotesInferred: boolean;
   entries: LeaderboardEntry[];
 }

@@ -5,6 +5,6 @@ export default defineConfig({
     // PGlite startup is CPU-heavy; parallel database files can exceed Vitest's
     // default per-test timeout even though each suite is fast in isolation.
     fileParallelism: false,
+    testTimeout: 60_000,
   },
 });
-

@@ -87,7 +87,10 @@ describe("DbStore web integration", () => {
     const gamesResponse = await fetch(`${baseUrl}/api/games`);
     expect(gamesResponse.status).toBe(200);
     const summaries = await gamesResponse.json() as GameSummary[];
-    expect(summaries.find((game) => game.id === fixture.archive.game.id)).toMatchObject({
+    const expectedCost = Object.values(fixture.archive.traces).flat()
+      .reduce((sum, trace) => sum + (trace.usage?.costUsd ?? 0), 0);
+    const fixtureSummary = summaries.find((game) => game.id === fixture.archive.game.id);
+    expect(fixtureSummary).toMatchObject({
       id: fixture.archive.game.id,
       roomCode: fixture.archive.game.roomCode,
       status: "completed",
@@ -95,6 +98,7 @@ describe("DbStore web integration", () => {
       playerCount: fixture.archive.game.players.length,
       matchupCount: fixture.archive.game.matchups.length,
     });
+    expect(fixtureSummary?.totalCostUsd).toBeCloseTo(expectedCost, 10);
     expect(summaries.find((game) => game.id === nextGame.gameId)).toMatchObject({
       roomCode: "NEXT",
       status: "abandoned",
@@ -110,6 +114,8 @@ describe("DbStore web integration", () => {
     });
     expect(board.population).toBe("player");
     expect(board.audienceVotingAvailable).toBe(false);
+    expect(board.audienceVotesInferred).toBe(false);
+    expect(board.entries.every((entry) => !entry.benched && entry.benchReason === null)).toBe(true);
     expect(new Set(board.entries.map((entry) => entry.modelId))).toEqual(
       new Set(fixture.archive.game.players.map((player) => player.modelId)),
     );

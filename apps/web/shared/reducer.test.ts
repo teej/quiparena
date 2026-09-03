@@ -82,4 +82,55 @@ describe("reduceLiveState", () => {
     expect(state.observedScores).toEqual({ p1: 900 });
     expect(state.observedPlacements).toEqual({ p1: 1 });
   });
+
+  it("records hidden reasoning and retry metadata for the live seat", () => {
+    const state = replayEvents([
+      { type: "game.created", gameId: "g1", roomCode: "QUIP", audienceEnabled: true, at },
+      { type: "player.joined", gameId: "g1", player, at },
+      { type: "prompt.dealt", gameId: "g1", round: 1, playerId: "p1", prompt: "A prompt", deadlineMs: 10, at },
+      {
+        type: "trace.completed",
+        gameId: "g1",
+        playerId: "p1",
+        prompt: "A prompt",
+        reasoning: "Provider-only chain of thought",
+        reasoningVisible: false,
+        answer: "An answer",
+        attempts: [
+          { kind: "primary", ms: 100, firstTokenMs: null, reasoningTokens: 0, aborted: true },
+          { kind: "fast", ms: 80, firstTokenMs: 20, reasoningTokens: 0, aborted: false },
+          { kind: "corrective", ms: 70, firstTokenMs: 15, reasoningTokens: 0, aborted: false },
+        ],
+        at,
+      },
+    ]);
+
+    expect(state.audienceEnabled).toBe(true);
+    expect(state.players["p1"]).toMatchObject({
+      reasoning: "",
+      reasoningVisible: false,
+      attempts: [
+        expect.objectContaining({ kind: "primary" }),
+        expect.objectContaining({ kind: "fast" }),
+        expect.objectContaining({ kind: "corrective" }),
+      ],
+    });
+  });
+
+  it("treats an empty completed trace as no visible reasoning", () => {
+    const state = replayEvents([
+      { type: "game.created", gameId: "g1", roomCode: "QUIP", at },
+      { type: "player.joined", gameId: "g1", player, at },
+      {
+        type: "trace.completed",
+        gameId: "g1",
+        playerId: "p1",
+        prompt: "A prompt",
+        reasoning: "",
+        answer: "An answer",
+        at,
+      },
+    ]);
+    expect(state.players["p1"]?.reasoningVisible).toBe(false);
+  });
 });

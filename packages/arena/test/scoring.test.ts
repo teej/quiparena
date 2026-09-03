@@ -42,20 +42,41 @@ describe("Quiplash 3 scoring", () => {
     expect(scoreMatchup(matchup(2, votes(1, 1, 1))).scores).toEqual({ a: 0, b: 2_500 });
   });
 
-  it("splits a 3,000-point Thriplash pool across every normalized entry", () => {
+  it("rounds displayed percentages before converting them to points", () => {
+    expect(scoreMatchup(matchup(1, votes(0, 1, 1, 1, 1, 1))).scores)
+      .toEqual({ a: 170, b: 930 });
+    expect(scoreMatchup(matchup(2, votes(0, 1, 1, 1, 1, 1))).scores)
+      .toEqual({ a: 340, b: 1_860 });
+  });
+
+  it("scores each real Thriplash pairing from a 6,000-point pool", () => {
     const thriplash: Thriplash = {
-      gameId: "g",
-      prompt: "Three things",
+      gameId: "ZSAX-1788413979845-1",
+      prompt: "Pair A",
       entries: [
-        { playerId: "a", lines: ["a1", "a2", "a3"] },
-        { playerId: "b", lines: ["b1", "b2", "b3"] },
-        { playerId: "c", lines: ["c1", "c2", "c3"] },
+        { playerId: "a", lines: ["a1", "a2", "a3"], prompt: "Pair A" },
+        { playerId: "b", lines: ["b1", "b2", "b3"], prompt: "Pair A" },
+        { playerId: "c", lines: ["c1", "c2", "c3"], prompt: "Pair B" },
+        { playerId: "d", lines: ["d1", "d2", "d3"], prompt: "Pair B" },
       ],
-      votes: votes(0, 1, 1, 2, 2, 2),
+      // ZSAX recorded 2/6 vs 4/6 (33/67) and a separate 0/6 vs 6/6.
+      votes: votes(0, 0, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3),
     };
-    expect(scoreThriplash(thriplash).scores).toEqual({ a: 500, b: 1_000, c: 1_800 });
-    expect(scoreThriplash({ ...thriplash, votes: votes(2, 2) }).scores)
-      .toEqual({ a: 0, b: 0, c: 3_750 });
+    expect(scoreThriplash(thriplash).scores)
+      .toEqual({ a: 1_980, b: 4_620, c: 0, d: 6_750 });
+  });
+
+  it("does not add a Thriplash winner bonus to a tied pair", () => {
+    const thriplash: Thriplash = {
+      gameId: "BAVU-1788416543831-4",
+      prompt: "Pair",
+      entries: [
+        { playerId: "a", lines: ["a1", "a2", "a3"], prompt: "Pair" },
+        { playerId: "b", lines: ["b1", "b2", "b3"], prompt: "Pair" },
+      ],
+      votes: votes(0, 0, 0, 1, 1, 1),
+    };
+    expect(scoreThriplash(thriplash).scores).toEqual({ a: 3_000, b: 3_000 });
   });
 
   it("totals a game, keeps nested score maps, and shares tied placements", () => {

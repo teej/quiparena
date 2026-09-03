@@ -236,6 +236,9 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
       type: "game.created",
       gameId: this.gameId,
       roomCode: this.connection.room.code,
+      ...(this.connection.room.audienceEnabled === undefined
+        ? {}
+        : { audienceEnabled: this.connection.room.audienceEnabled }),
       at: this.#at(),
     });
     this.#emitEvent({

@@ -2,6 +2,7 @@ import type { GameEvent, StreamEvent } from "@quiparena/core";
 import {
   computeRatings,
   hasAudienceVotes,
+  hasInferredAudienceVotes,
   leaderboard as loadLeaderboard,
   listRecordedGames,
   loadGame,
@@ -98,9 +99,10 @@ export class DbStore implements Store {
   }
 
   async leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse> {
-    const [rows, audienceVotingAvailable] = await Promise.all([
+    const [rows, audienceVotingAvailable, audienceVotesInferred] = await Promise.all([
       loadLeaderboard(this.db, population),
       hasAudienceVotes(this.db),
+      hasInferredAudienceVotes(this.db),
     ]);
     const entries = population === "audience" && !audienceVotingAvailable
       ? []
@@ -109,6 +111,8 @@ export class DbStore implements Store {
             modelId: row.modelSlug,
             name: row.displayName,
             lab: row.lab,
+            benched: row.benched,
+            benchReason: row.benchReason,
             rating: Math.round(row.rating),
             intervalLow: Math.round(row.lower95),
             intervalHigh: Math.round(row.upper95),
@@ -121,7 +125,7 @@ export class DbStore implements Store {
             matchupWinRate: row.stats.matchupWinRate ?? 0,
           };
         });
-    return { population, audienceVotingAvailable, entries };
+    return { population, audienceVotingAvailable, audienceVotesInferred, entries };
   }
 
   frontier(population: LeaderboardPopulation): Promise<FrontierResponse> {
@@ -158,6 +162,7 @@ export class DbStore implements Store {
         playerId: trace.playerId,
         prompt: trace.prompt,
         reasoning: trace.reasoning,
+        ...(trace.reasoningVisible === undefined ? {} : { reasoningVisible: trace.reasoningVisible }),
         answer: trace.answer,
         ...(trace.usage === undefined ? {} : { usage: trace.usage }),
         ...(trace.attempts === undefined ? {} : { attempts: trace.attempts }),

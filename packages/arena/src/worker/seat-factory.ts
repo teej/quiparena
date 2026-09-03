@@ -46,6 +46,7 @@ export function buildModelPlayer(
     ...(entry.reasoningMandatory === undefined
       ? {}
       : { reasoningMandatory: entry.reasoningMandatory }),
+    ...(entry.reasoningPrompt === undefined ? {} : { reasoningPrompt: entry.reasoningPrompt }),
     ...(entry.temperature === null ? {} : { temperature: entry.temperature }),
     ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
     ...options.config,

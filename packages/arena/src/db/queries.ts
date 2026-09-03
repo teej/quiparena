@@ -1,5 +1,5 @@
 import type { GameEvent, PlayerRef, StreamEvent } from "@quiparena/core";
-import { asc, count, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq, sum } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./client.js";
 import { events, gamePlayers, games, matchups, traces, votes } from "./schema.js";
@@ -14,6 +14,7 @@ export interface RecordedGameSummary {
   matchupCount: number;
   winner: PlayerRef | null;
   topScore: number | null;
+  totalCostUsd: number;
 }
 
 export interface RecordedTrace {
@@ -21,6 +22,7 @@ export interface RecordedTrace {
   purpose?: "answer" | "vote" | "thriplash";
   prompt: string;
   reasoning: string;
+  reasoningVisible?: boolean;
   answer: string;
   usage?: Extract<StreamEvent, { type: "trace.completed" }>["usage"];
   attempts?: Extract<StreamEvent, { type: "trace.completed" }>["attempts"];
@@ -37,26 +39,34 @@ function publicStatus(status: "created" | "running" | "completed" | "failed" | "
 
 /** Return archive summaries newest-first without reconstructing every full game. */
 export async function listRecordedGames(db: ArenaDatabaseClient): Promise<RecordedGameSummary[]> {
-  const [gameRows, playerRows, matchupCountRows] = await Promise.all([
+  const [gameRows, playerRows, matchupCountRows, traceCostRows] = await Promise.all([
     db.select().from(games).orderBy(desc(games.startedAt), desc(games.id)),
     db.select({
       gameId: gamePlayers.gameId,
       playerId: gamePlayers.playerId,
       name: gamePlayers.name,
       modelSlug: gamePlayers.modelSlug,
+      observedPlacement: gamePlayers.observedPlacement,
     }).from(gamePlayers),
     db.select({ gameId: matchups.gameId, value: count() })
       .from(matchups)
       .groupBy(matchups.gameId),
+    db.select({ gameId: traces.gameId, value: sum(traces.costUsd) })
+      .from(traces)
+      .groupBy(traces.gameId),
   ]);
 
   const playersByGame = new Map<string, PlayerRef[]>();
+  const observedWinners = new Map<string, PlayerRef>();
   for (const row of playerRows) {
     const players = playersByGame.get(row.gameId) ?? [];
-    players.push({ id: row.playerId, name: row.name, modelId: row.modelSlug });
+    const player = { id: row.playerId, name: row.name, modelId: row.modelSlug };
+    players.push(player);
+    if (row.observedPlacement === 1) observedWinners.set(row.gameId, player);
     playersByGame.set(row.gameId, players);
   }
   const matchupCounts = new Map(matchupCountRows.map((row) => [row.gameId, row.value]));
+  const traceCosts = new Map(traceCostRows.map((row) => [row.gameId, Number(row.value ?? 0)]));
 
   return gameRows.map((game) => {
     const players = playersByGame.get(game.id) ?? [];
@@ -81,8 +91,10 @@ export async function listRecordedGames(db: ArenaDatabaseClient): Promise<Record
       status: publicStatus(game.status),
       playerCount: players.length,
       matchupCount: matchupCounts.get(game.id) ?? 0,
-      winner: top ? (players.find((player) => player.id === top[0]) ?? null) : null,
+      winner: observedWinners.get(game.id)
+        ?? (top ? (players.find((player) => player.id === top[0]) ?? null) : null),
       topScore: top?.[1] ?? null,
+      totalCostUsd: traceCosts.get(game.id) ?? 0,
     };
   });
 }
@@ -125,10 +137,14 @@ export async function loadRecordedTraces(
       ? stored["purpose"]
       : undefined;
     const budgetMiss = stored["budgetMiss"] === true;
+    const reasoningVisible = typeof stored["reasoningVisible"] === "boolean"
+      ? stored["reasoningVisible"]
+      : undefined;
     const {
       attempts: _attempts,
       purpose: _purpose,
       budgetMiss: _budgetMiss,
+      reasoningVisible: _reasoningVisible,
       ...usage
     } = stored;
     return {
@@ -136,6 +152,7 @@ export async function loadRecordedTraces(
       ...(purpose === undefined ? {} : { purpose }),
       prompt: row.prompt,
       reasoning: row.reasoning,
+      ...(reasoningVisible === undefined ? {} : { reasoningVisible }),
       answer: row.answer,
       ...(Object.keys(usage).length === 0 ? {} : { usage: usage as NonNullable<RecordedTrace["usage"]> }),
       ...(attempts === undefined ? {} : { attempts }),
@@ -150,6 +167,15 @@ export async function hasAudienceVotes(db: ArenaDatabaseClient): Promise<boolean
   const rows = await db.select({ id: votes.id })
     .from(votes)
     .where(eq(votes.population, "audience"))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** Whether any recorded audience result was reconstructed from published percentages. */
+export async function hasInferredAudienceVotes(db: ArenaDatabaseClient): Promise<boolean> {
+  const rows = await db.select({ id: votes.id })
+    .from(votes)
+    .where(and(eq(votes.population, "audience"), eq(votes.inferred, true)))
     .limit(1);
   return rows.length > 0;
 }

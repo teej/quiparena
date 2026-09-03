@@ -606,6 +606,64 @@ describe("ModelPlayer streaming", () => {
     expect(model.doStreamCalls[0]?.temperature).toBe(0.8);
   });
 
+  it("adds the visible-reasoning prompt only for configured reasoning attempts", async () => {
+    const model = mockModelSequence([
+      { text: "A joke" },
+      { text: "A" },
+    ]);
+    const player = new ModelPlayer({
+      model: "test/reasoning-prompt",
+      displayName: "Thinker",
+      reasoning: { maxTokens: 400 },
+      reasoningPrompt: true,
+      languageModel: model,
+      safetyMarginMs: 0,
+      logger: quietLogger(),
+    });
+
+    await player.answer("Prompt", context());
+    await player.vote("Prompt", ["one", "two"], context());
+
+    expect(model.doStreamCalls[0]?.prompt).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("silently brainstorm at least five candidates"),
+      }),
+    ]));
+    expect(model.doStreamCalls[1]?.prompt).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("silently compare every choice"),
+      }),
+    ]));
+
+    const retryModel = mockModelSequence([{ text: "" }, { text: "Recovered" }]);
+    const retryPlayer = new ModelPlayer({
+      model: "test/reasoning-prompt-retry",
+      displayName: "Retry",
+      reasoning: { maxTokens: 400 },
+      reasoningPrompt: true,
+      languageModel: retryModel,
+      safetyMarginMs: 0,
+      logger: quietLogger(),
+    });
+    await retryPlayer.answer("Prompt", context());
+
+    expect(retryModel.doStreamCalls).toHaveLength(2);
+    expect(retryModel.doStreamCalls[0]?.prompt).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("silently brainstorm at least five candidates"),
+      }),
+    ]));
+    expect(retryModel.doStreamCalls[1]?.prompt).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: expect.not.stringContaining("silently brainstorm"),
+      }),
+    ]));
+  });
+
   it("never throws when the provider fails", async () => {
     const logger = quietLogger();
     const player = new ModelPlayer({

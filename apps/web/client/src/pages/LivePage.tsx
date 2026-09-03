@@ -42,7 +42,17 @@ export function LivePage() {
         </section>
       ) : (
         <section className="panes" aria-label="Players">
-          {players.map((player, index) => <Pane key={player.player.id} player={player} index={index} />)}
+          {players.map((player, index) => {
+            const trace = state.traces[player.player.id]?.find((item) => item.prompt === player.prompt);
+            return (
+              <Pane
+                key={player.player.id}
+                player={player}
+                index={index}
+                {...(trace === undefined ? {} : { trace })}
+              />
+            );
+          })}
         </section>
       )}
 

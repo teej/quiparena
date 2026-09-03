@@ -4,8 +4,9 @@
  * Quiplash 3 in one paragraph: 3-8 players. Rounds 1 and 2: every player gets two
  * prompts, every prompt is shared by exactly two players, and everyone who did not
  * write for a prompt votes between its two answers. Round 2 scores double. Round 3
- * ("Thriplash"): everyone answers the same prompt with three lines, everyone votes
- * for one entry (not their own). The audience (if enabled) votes in every round.
+ * ("Thriplash"): entries contain three lines and are presented in head-to-head
+ * pairs; players who did not write either entry vote on the pair. The audience
+ * (if enabled) votes in every round.
  */
 
 export type RoundNumber = 1 | 2 | 3;
@@ -55,6 +56,8 @@ export interface Matchup {
 export interface ThriplashEntry {
   playerId: string;
   lines: [string, string, string];
+  /** Pair-specific prompt. Older normalized records only have Thriplash.prompt. */
+  prompt?: string;
 }
 
 export interface Thriplash {
@@ -118,7 +121,7 @@ export interface ModelBenchSnapshot {
  * ephemeral events stream to the website but are not stored individually.
  */
 export type GameEvent =
-  | { type: "game.created"; gameId: string; roomCode: string; at: string }
+  | { type: "game.created"; gameId: string; roomCode: string; audienceEnabled?: boolean; at: string }
   | { type: "player.joined"; gameId: string; player: PlayerRef; at: string }
   | { type: "game.started"; gameId: string; at: string }
   | { type: "round.started"; gameId: string; round: RoundNumber; at: string }
@@ -140,6 +143,6 @@ export type GameEvent =
 export type StreamEvent =
   | { type: "thinking.delta"; gameId: string; playerId: string; text: string; at: string }
   | { type: "answer.draft"; gameId: string; playerId: string; text: string; at: string }
-  | { type: "trace.completed"; gameId: string; playerId: string; purpose?: "answer" | "vote" | "thriplash"; prompt: string; reasoning: string; answer: string; budgetMiss?: boolean; attempts?: Array<{ kind: "primary" | "fast" | "corrective"; ms: number; firstTokenMs: number | null; reasoningTokens: number; aborted: boolean; text?: string; reason?: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number; totalMs?: number; firstTokenMs?: number | null }; at: string };
+  | { type: "trace.completed"; gameId: string; playerId: string; purpose?: "answer" | "vote" | "thriplash"; prompt: string; reasoning: string; reasoningVisible?: boolean; answer: string; budgetMiss?: boolean; attempts?: Array<{ kind: "primary" | "fast" | "corrective"; ms: number; firstTokenMs: number | null; reasoningTokens: number; aborted: boolean; text?: string; reason?: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number; totalMs?: number; firstTokenMs?: number | null }; at: string };
 
 export type AnyEvent = GameEvent | StreamEvent;

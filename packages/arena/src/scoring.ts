@@ -2,25 +2,26 @@ import type { Game, Matchup, Thriplash, Vote } from "@quiparena/core";
 
 type ScoreMap = Record<string, number>;
 
-export const ROUND_POOLS = { 1: 1_000, 2: 2_000, 3: 3_000 } as const;
-export const WIN_BONUSES = { 1: 100, 2: 200, 3: 300 } as const;
+export const ROUND_POOLS = { 1: 1_000, 2: 2_000, 3: 6_000 } as const;
+export const WIN_BONUSES = { 1: 100, 2: 200, 3: 600 } as const;
 export const QUIPLASH_BONUSES = { 1: 250, 2: 500, 3: 750 } as const;
 
 /**
  * Rules source: https://jackboxgames.fandom.com/wiki/Quiplash_(series)#Game_Rules
  * documents a 1,000-point R1 vote pool (10 points per percentage point), a
  * 100-point win bonus, a 250-point Quiplash bonus instead of the win bonus,
- * and doubled R2 values. Its legacy Final Round section documents a
- * 3,000-point pool (30 points per percentage point). For the Recorder's
- * normalized all-entry Thriplash row, Arena applies that 3,000-point pool.
- * The source does not state Quiplash 3's R3 bonus arithmetic separately, so
- * the 3x win/Quiplash bonuses (300/750) are the commonly documented multiplier
- * and remain an explicitly marked inference pending a readable TV audit.
+ * and doubled R2 values. Quiplash 3's accessible TV narration and final
+ * standings provide the missing Thriplash details: each pair of entries has a
+ * 6,000-point pool (60 points per displayed percentage point), a 600-point win
+ * bonus, or a 750-point unanimous "Thriplash" bonus instead. See
+ * `scoring audit`; e.g. ZSAX-1788413979845-1 records 33/67 as 1,980/4,620 and
+ * 0/100 as 0/6,750.
  *
  * The controller protocol has no scores (docs/quiplash3-controller.md), so we
- * calculate from captured votes. We apportion the pool by exact weighted vote
- * share with largest-remainder rounding; this preserves the whole pool and is
- * deterministic when thirds cannot be represented as integer points.
+ * calculate from captured votes. The game first rounds each weighted vote
+ * share to a whole displayed percentage, then multiplies it by the round's
+ * points-per-percent value. It does not preserve an exact pool split: 1/6 and
+ * 5/6 votes are displayed as 17/83 and score 170/830 before bonuses.
  */
 
 interface ScoredChoice {
@@ -38,25 +39,17 @@ function apportionedScores(
   votes: readonly Vote[],
   pool: number,
 ): ScoreMap {
-  const weights = choices.map((_choice, index) => votes
-    .filter((vote) => vote.choice === index)
+  const weights = choices.map((choice) => votes
+    .filter((vote) => vote.choice === choice.index)
     .reduce((sum, vote) => sum + voteWeight(vote), 0));
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
   const scores = Object.fromEntries(choices.map((choice) => [choice.ownerId, 0])) as ScoreMap;
   if (totalWeight <= 0) return scores;
 
-  const portions = choices.map((choice, index) => {
-    const exact = pool * (weights[index] ?? 0) / totalWeight;
-    const floor = Math.floor(exact);
-    return { choice, exact, floor, fraction: exact - floor };
-  });
-  let remainder = pool - portions.reduce((sum, portion) => sum + portion.floor, 0);
-  const remainderOrder = [...portions].sort((left, right) => (
-    right.fraction - left.fraction || left.choice.index - right.choice.index
-  ));
-  for (const portion of remainderOrder) {
-    scores[portion.choice.ownerId] = portion.floor + (remainder > 0 ? 1 : 0);
-    remainder -= 1;
+  const pointsPerPercent = pool / 100;
+  for (const [index, choice] of choices.entries()) {
+    const percentage = Math.round(100 * (weights[index] ?? 0) / totalWeight);
+    scores[choice.ownerId] = percentage * pointsPerPercent;
   }
   return scores;
 }
@@ -69,22 +62,21 @@ function addWinnerBonus(
 ): ScoreMap {
   const validVotes = votes.filter((vote) => (
     Number.isInteger(vote.choice)
-    && vote.choice >= 0
-    && vote.choice < choices.length
+    && choices.some((choice) => choice.index === vote.choice)
     && voteWeight(vote) > 0
   ));
   if (validVotes.length === 0) return scores;
-  const weights = choices.map((_choice, index) => validVotes
-    .filter((vote) => vote.choice === index)
+  const weights = choices.map((choice) => validVotes
+    .filter((vote) => vote.choice === choice.index)
     .reduce((sum, vote) => sum + voteWeight(vote), 0));
   const highest = Math.max(...weights);
   const winners = weights.flatMap((weight, index) => weight === highest ? [index] : []);
   if (winners.length !== 1) return scores;
 
-  const winnerIndex = winners[0]!;
-  const winner = choices[winnerIndex]!;
+  const winnerPosition = winners[0]!;
+  const winner = choices[winnerPosition]!;
   const total = weights.reduce((sum, weight) => sum + weight, 0);
-  const bonus = weights[winnerIndex] === total
+  const bonus = weights[winnerPosition] === total
     ? QUIPLASH_BONUSES[round]
     : WIN_BONUSES[round];
   return { ...scores, [winner.ownerId]: (scores[winner.ownerId] ?? 0) + bonus };
@@ -97,8 +89,7 @@ function scoreChoices(
 ): ScoreMap {
   const validVotes = votes.filter((vote) => (
     Number.isInteger(vote.choice)
-    && vote.choice >= 0
-    && vote.choice < choices.length
+    && choices.some((choice) => choice.index === vote.choice)
     && voteWeight(vote) > 0
   ));
   return addWinnerBonus(
@@ -118,13 +109,32 @@ export function scoreMatchup(matchup: Matchup): Matchup {
   return { ...matchup, scores: scoreChoices(choices, matchup.votes, matchup.round) };
 }
 
-/** Score the Recorder's normalized all-entry Thriplash result without mutation. */
+function thriplashEntryPrompt(entry: Thriplash["entries"][number], fallback: string): string {
+  const prompt = entry.prompt?.trim() || fallback;
+  return prompt.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+}
+
+/** Score each head-to-head pair in the Recorder's normalized Thriplash result. */
 export function scoreThriplash(thriplash: Thriplash): Thriplash {
-  const choices = thriplash.entries.map((entry, index) => ({
-    ownerId: entry.playerId,
-    index,
-  }));
-  return { ...thriplash, scores: scoreChoices(choices, thriplash.votes, 3) };
+  const grouped = new Map<string, ScoredChoice[]>();
+  for (const [index, entry] of thriplash.entries.entries()) {
+    const prompt = thriplashEntryPrompt(entry, thriplash.prompt);
+    const choices = grouped.get(prompt) ?? [];
+    choices.push({ ownerId: entry.playerId, index });
+    grouped.set(prompt, choices);
+  }
+
+  const scores = Object.fromEntries(
+    thriplash.entries.map((entry) => [entry.playerId, 0]),
+  ) as ScoreMap;
+  for (const choices of grouped.values()) {
+    const choiceIndexes = new Set(choices.map((choice) => choice.index));
+    const pairVotes = thriplash.votes.filter((vote) => choiceIndexes.has(vote.choice));
+    for (const [playerId, score] of Object.entries(scoreChoices(choices, pairVotes, 3))) {
+      scores[playerId] = (scores[playerId] ?? 0) + score;
+    }
+  }
+  return { ...thriplash, scores };
 }
 
 export interface TotalScoresInput {

@@ -24,6 +24,7 @@ import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js
 import { backfillAudienceVotes, loadGame } from "./recorder.js";
 import { findRosterModel, loadRoster, validateRoster, type ModelRoster } from "./registry.js";
 import type { RosterModel } from "./registry.js";
+import { auditScoring, formatScoringAudit } from "./scoring-audit.js";
 import { WorkerEventBus } from "./worker/bus.js";
 import { CompactGameLogFormatter } from "./worker/compact-logger.js";
 import { FakeHarness } from "./worker/fake-harness.js";
@@ -40,6 +41,7 @@ function usage(): string {
     "  quiparena db migrate",
     "  quiparena ratings compute [--bootstrap 200] [--backfill-audience]",
     "  quiparena ratings show [--population blended]",
+    "  quiparena scoring audit",
     "  quiparena games list [--limit 20]",
     "  quiparena games show <id>",
     "  quiparena games abandon <id>",
@@ -116,6 +118,7 @@ function playerConfig(slug: string, roster: ModelRoster): ModelPlayerConfig {
     ...(entry?.reasoningMandatory === undefined
       ? {}
       : { reasoningMandatory: entry.reasoningMandatory }),
+    ...(entry?.reasoningPrompt === undefined ? {} : { reasoningPrompt: entry.reasoningPrompt }),
     ...(entry?.temperature == null ? {} : { temperature: entry.temperature }),
   };
 }
@@ -275,6 +278,11 @@ async function runRatings(args: string[]): Promise<void> {
       for (const population of ["player", "audience", "blended"] as const) {
         console.log(`${population}: ${result.populations[population].length} models`);
       }
+      const audit = await auditScoring(db);
+      for (const game of audit.games) {
+        if (game.maxFinalDelta === null) continue;
+        console.log(`score validation: game=${game.gameId} max-delta=${game.maxFinalDelta}`);
+      }
     });
     return;
   }
@@ -305,6 +313,15 @@ async function runRatings(args: string[]): Promise<void> {
     return;
   }
   throw new Error("Usage: quiparena ratings <compute|show>");
+}
+
+async function runScoring(args: string[]): Promise<void> {
+  const [command, ...rest] = args;
+  if (command !== "audit") throw new Error("Usage: quiparena scoring audit");
+  parseArgs({ args: rest, options: {}, strict: true });
+  await usingDb(async (db) => {
+    console.log(formatScoringAudit(await auditScoring(db)));
+  });
 }
 
 async function runGames(args: string[]): Promise<void> {
@@ -707,6 +724,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     case "ratings":
       await runRatings(args);
+      break;
+    case "scoring":
+      await runScoring(args);
       break;
     case "games":
       await runGames(args);

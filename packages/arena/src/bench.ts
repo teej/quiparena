@@ -6,6 +6,11 @@ import { DEFAULT_FALLBACK } from "./sanitize.js";
 
 const CONCURRENCY = 8;
 const SPEND_CAP_USD = 3;
+const REASONING_PROBE_PROMPT = [
+  "Logic puzzle: Four runners—Ava, Bo, Cy, and Di—finish a race.",
+  "Ava is neither first nor last. Bo finishes before Cy. Di finishes immediately after Ava. Cy is not last.",
+  "Determine the unique order.",
+].join(" ");
 const PROMPTS = [
   {
     prompt: "The worst thing to hear from your dentist",
@@ -41,6 +46,7 @@ interface OperationResult {
 interface ModelResult {
   entry: RosterModel;
   operations: OperationResult[];
+  reasoningProbe?: OperationResult;
   skippedReason?: string;
 }
 
@@ -128,6 +134,7 @@ async function benchModel(
     ...(entry.reasoningMandatory === undefined
       ? {}
       : { reasoningMandatory: entry.reasoningMandatory }),
+    ...(entry.reasoningPrompt === undefined ? {} : { reasoningPrompt: entry.reasoningPrompt }),
     ...(entry.temperature === null ? {} : { temperature: entry.temperature }),
     apiKey,
     logger,
@@ -137,8 +144,25 @@ async function benchModel(
     onFailure: (error) => failures.push(error),
   });
   const operations: OperationResult[] = [];
+  let reasoningProbe: OperationResult | undefined;
 
   console.error(`bench: starting ${entry.slug}`);
+  if (entry.reasoningPrompt) {
+    const traceIndex = traces.length;
+    const answer = await player.answer(REASONING_PROBE_PROMPT, {
+      gameId: `bench-${entry.slug}-reasoning-probe`,
+      round: 1,
+      deadlineMs: Date.now() + budgetMs,
+      maxLength: 45,
+    });
+    const trace = traces[traceIndex];
+    if (!trace) throw new Error(`${entry.slug} did not emit a reasoning-probe trace`);
+    reasoningProbe = operationFromTrace("answer", trace, answer === DEFAULT_FALLBACK);
+    reportCost(reasoningProbe.costUsd);
+    console.error(
+      `bench: ${entry.slug} puzzle reasoning probe=${reasoningProbe.reasoningTokens} tokens`,
+    );
+  }
   for (const [promptIndex, fixture] of PROMPTS.entries()) {
     const answerTraceIndex = traces.length;
     const failureIndex = failures.length;
@@ -164,6 +188,7 @@ async function benchModel(
       return {
         entry,
         operations,
+        ...(reasoningProbe === undefined ? {} : { reasoningProbe }),
         skippedReason: failures.at(-1)?.message ?? "immediate provider error",
       };
     }
@@ -183,7 +208,7 @@ async function benchModel(
     reportCost(voteResult.costUsd);
   }
   console.error(`bench: finished ${entry.slug}`);
-  return { entry, operations };
+  return { entry, operations, ...(reasoningProbe === undefined ? {} : { reasoningProbe }) };
 }
 
 async function mapConcurrent<T, U>(
@@ -207,6 +232,9 @@ async function mapConcurrent<T, U>(
 
 function failedBudget(result: ModelResult, budgetMs: number): boolean {
   if (result.skippedReason) return true;
+  if (result.entry.reasoningPrompt && (result.reasoningProbe?.reasoningTokens ?? 0) === 0) {
+    return true;
+  }
   const misses = result.operations.filter((operation) => (
     operation.budgetMiss || operation.totalMs > budgetMs
   )).length;
@@ -227,7 +255,8 @@ function printTable(results: readonly ModelResult[], budgetMs: number): void {
       (sum, operation) => sum + operation.reasoningTokens,
       0,
     );
-    const costUsd = result.operations.reduce((sum, operation) => sum + operation.costUsd, 0);
+    const costUsd = result.operations.reduce((sum, operation) => sum + operation.costUsd, 0)
+      + (result.reasoningProbe?.costUsd ?? 0);
     const misses = result.operations.filter((operation) => (
       operation.budgetMiss || operation.totalMs > budgetMs
     )).length;
@@ -237,6 +266,7 @@ function printTable(results: readonly ModelResult[], budgetMs: number): void {
       "max total ms": result.skippedReason ? "ERROR" : Math.max(0, ...totalTimes),
       "p50 first-token ms": firstTokenTimes.length === 0 ? "—" : percentile(firstTokenTimes, 0.5),
       "reasoning tokens": reasoningTokens,
+      "puzzle reasoning": result.reasoningProbe?.reasoningTokens ?? "—",
       "cost USD": costUsd.toFixed(6),
       "miss rate": result.operations.length === 0
         ? "—"

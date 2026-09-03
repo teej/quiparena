@@ -11,6 +11,7 @@ export * from "./recorder.js";
 export * from "./registry.js";
 export * from "./sanitize.js";
 export * from "./scoring.js";
+export * from "./scoring-audit.js";
 export * from "./worker/bus.js";
 export * from "./worker/compact-logger.js";
 export * from "./worker/fake-harness.js";

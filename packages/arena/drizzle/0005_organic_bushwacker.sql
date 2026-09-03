@@ -1,0 +1,1 @@
+ALTER TABLE "answers" ADD COLUMN "prompt" text;

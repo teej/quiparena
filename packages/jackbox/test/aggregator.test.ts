@@ -176,6 +176,77 @@ describe("GameAggregator", () => {
     expect(emitted.at(-1)).toEqual({ type: "game.ended", gameId: "game-4", at });
     expect(emitted.filter((event) => event.type === "game.ended")).toHaveLength(1);
   });
+
+  it("retains every vote and pair-specific prompt across Thriplash matchups", () => {
+    const emitted: GameEvent[] = [];
+    const aggregator = new GameAggregator({
+      gameId: "game-4",
+      expectedPlayerCount: 4,
+      onEvent: (event) => emitted.push(event),
+    });
+    const players: PlayerRef[] = ["p1", "p2", "p3", "p4"].map((id) => ({
+      id,
+      name: id.toUpperCase(),
+      modelId: null,
+    }));
+    players.forEach((player) => add(aggregator, {
+      type: "player.joined",
+      gameId: "game-4",
+      player,
+      at,
+    }));
+    const entries = {
+      p1: ["one a", "one b", "one c"],
+      p2: ["two a", "two b", "two c"],
+      p3: ["three a", "three b", "three c"],
+      p4: ["four a", "four b", "four c"],
+    } as const;
+    for (const player of players) {
+      const prompt = player.id === "p1" || player.id === "p2" ? "Pair one" : "Pair two";
+      add(aggregator, {
+        type: "answer.submitted",
+        gameId: "game-4",
+        round: 3,
+        playerId: player.id,
+        prompt,
+        answer: [...entries[player.id as keyof typeof entries]],
+        blank: false,
+        latencyMs: 10,
+        at,
+      });
+    }
+    const selections = [
+      ["p3", "Pair one", "p1"],
+      ["p4", "Pair one", "p2"],
+      ["p1", "Pair two", "p3"],
+      ["p2", "Pair two", "p4"],
+    ] as const;
+    for (const [voterId, prompt, selectedId] of selections) {
+      const pairIds = prompt === "Pair one" ? ["p1", "p2"] as const : ["p3", "p4"] as const;
+      const options = pairIds.map((id) => entries[id].join("\n"));
+      const choice = pairIds.indexOf(selectedId as never);
+      add(aggregator, voteRequest(voterId, 3, prompt, options));
+      add(aggregator, voteCast(voterId, 3, prompt, choice, selectedId, entries[selectedId].join("\n")));
+    }
+
+    const thriplash = emitted.find((event) => event.type === "thriplash.resolved");
+    expect(thriplash).toMatchObject({
+      thriplash: {
+        entries: [
+          { playerId: "p1", prompt: "Pair one" },
+          { playerId: "p2", prompt: "Pair one" },
+          { playerId: "p3", prompt: "Pair two" },
+          { playerId: "p4", prompt: "Pair two" },
+        ],
+        votes: [
+          { voterId: "p3", choice: 0 },
+          { voterId: "p4", choice: 1 },
+          { voterId: "p1", choice: 2 },
+          { voterId: "p2", choice: 3 },
+        ],
+      },
+    });
+  });
 });
 
 function add(aggregator: GameAggregator, event: AnyEvent): void {

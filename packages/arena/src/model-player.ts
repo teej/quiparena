@@ -43,6 +43,18 @@ const SYSTEM_PROMPT = [
   "Obey the character limit and exact output format in the user request.",
 ].join(" ");
 
+const ANSWER_REASONING_PROMPT = [
+  "Before answering, use your reasoning channel to silently brainstorm at least five candidates,",
+  "compare them for surprise and specificity, and choose the funniest.",
+  "Do not put the brainstorming in the final answer.",
+].join(" ");
+
+const VOTE_REASONING_PROMPT = [
+  "Before answering, use your reasoning channel to silently compare every choice for humor,",
+  "surprise, and specificity, then choose the funniest.",
+  "Do not put the comparison in the final answer.",
+].join(" ");
+
 export const DEFAULT_SAFETY_MARGIN_MS = 0;
 
 export type ReasoningEffort = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
@@ -73,6 +85,8 @@ export interface ModelPlayerConfig {
   reasoning?: ReasoningConfig | null;
   /** Force even fast retries to retain a minimal reasoning budget. */
   reasoningMandatory?: boolean;
+  /** Ask adaptive-reasoning models to use their visible reasoning channel. */
+  reasoningPrompt?: boolean;
   temperature?: number;
   safetyMarginMs?: number;
   /** Time held back for an answer or Thriplash fast retry. */
@@ -262,6 +276,7 @@ export class ModelPlayer implements Player {
 
   private readonly playerId: string;
   private readonly reasoning: ReasoningConfig | null;
+  private readonly reasoningPrompt: boolean;
   private readonly temperature: number | undefined;
   private readonly safetyMarginMs: number;
   private readonly fastRetryBudgetMs: number;
@@ -309,6 +324,7 @@ export class ModelPlayer implements Player {
     this.modelId = config.model;
     this.playerId = config.playerId ?? config.model;
     this.reasoning = config.reasoning ?? null;
+    this.reasoningPrompt = config.reasoningPrompt ?? false;
     this.temperature = config.temperature;
     this.safetyMarginMs = config.safetyMarginMs ?? DEFAULT_SAFETY_MARGIN_MS;
     this.fastRetryBudgetMs = config.fastRetryBudgetMs ?? DEFAULT_FAST_RETRY_BUDGET_MS.answer;
@@ -587,7 +603,7 @@ export class ModelPlayer implements Player {
     try {
       const result = streamText({
         model: this.languageModel,
-        system: SYSTEM_PROMPT,
+        system: this.systemPrompt(options.purpose, options.reasoningMode, configuredReasoning),
         messages,
         maxOutputTokens,
         maxRetries: 0,
@@ -677,6 +693,19 @@ export class ModelPlayer implements Player {
     } catch (error) {
       this.logError(`[${this.modelId}] ${label} hook failed`, error);
     }
+  }
+
+  private systemPrompt(
+    purpose: GenerationPurpose,
+    reasoningMode: RetryReasoningMode,
+    configuredReasoning: ReasoningConfig | null,
+  ): string {
+    const reasoningDisabled = configuredReasoning === null
+      || ("effort" in configuredReasoning && configuredReasoning.effort === "none");
+    if (!this.reasoningPrompt || reasoningMode !== "configured" || reasoningDisabled) {
+      return SYSTEM_PROMPT;
+    }
+    return `${SYSTEM_PROMPT} ${purpose === "vote" ? VOTE_REASONING_PROMPT : ANSWER_REASONING_PROMPT}`;
   }
 
   private emitTrace(

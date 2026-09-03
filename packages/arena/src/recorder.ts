@@ -235,8 +235,11 @@ function observedTargetFromRows(
   }
 
   const thriplash = thriplashRows[0];
-  if (thriplash && normalizedPrompt(thriplash.prompt) === normalizedPrompt(observed.prompt)) {
-    const storedAnswers = answerRows.filter((answer) => answer.thriplashId === thriplash.id);
+  if (thriplash) {
+    const storedAnswers = answerRows.filter((answer) => (
+      answer.thriplashId === thriplash.id
+      && normalizedPrompt(answer.prompt ?? thriplash.prompt) === normalizedPrompt(observed.prompt)
+    ));
     const choices = matchedAnswerIndexes(observed.answers, storedAnswers);
     if (choices) return { matchupId: null, thriplashId: thriplash.id, choices };
   }
@@ -378,11 +381,13 @@ function hasGameId(event: GameEvent): event is GameEvent & { gameId: string } {
 }
 
 function traceUsage(event: TraceEvent): Record<string, unknown> | null {
-  if (!event.usage && !event.attempts && !event.budgetMiss && !event.purpose) return null;
+  if (!event.usage && !event.attempts && !event.budgetMiss && !event.purpose
+    && event.reasoningVisible === undefined) return null;
   return {
     ...(event.usage ?? {}),
     ...(event.attempts === undefined ? {} : { attempts: event.attempts }),
     ...(event.purpose === undefined ? {} : { purpose: event.purpose }),
+    ...(event.reasoningVisible === undefined ? {} : { reasoningVisible: event.reasoningVisible }),
     ...(event.budgetMiss ? { budgetMiss: true } : {}),
   };
 }
@@ -631,6 +636,7 @@ export class Recorder {
         gameId: matchup.gameId,
         playerId: answer.playerId,
         answerIndex,
+        prompt: matchup.prompt,
         text: answer.text,
         blank: meta?.blank ?? answer.blank,
         lines: null,
@@ -639,6 +645,7 @@ export class Recorder {
         target: answers.id,
         set: {
           answerIndex,
+          prompt: matchup.prompt,
           text: answer.text,
           blank: meta?.blank ?? answer.blank,
           latencyMs: meta?.latencyMs ?? null,
@@ -662,7 +669,8 @@ export class Recorder {
     });
 
     for (const [answerIndex, entry] of thriplash.entries.entries()) {
-      const meta = await this.submissionMeta(db, thriplash.gameId, entry.playerId, thriplash.prompt);
+      const prompt = entry.prompt ?? thriplash.prompt;
+      const meta = await this.submissionMeta(db, thriplash.gameId, entry.playerId, prompt);
       await db.insert(answers).values({
         id: `${id}:answer:${entry.playerId}`,
         matchupId: null,
@@ -670,6 +678,7 @@ export class Recorder {
         gameId: thriplash.gameId,
         playerId: entry.playerId,
         answerIndex,
+        prompt,
         text: entry.lines.join("\n"),
         blank: meta?.blank ?? entry.lines.every((line) => line.length === 0),
         lines: entry.lines,
@@ -678,6 +687,7 @@ export class Recorder {
         target: answers.id,
         set: {
           answerIndex,
+          prompt,
           text: entry.lines.join("\n"),
           blank: meta?.blank ?? entry.lines.every((line) => line.length === 0),
           lines: entry.lines,
@@ -985,6 +995,9 @@ export async function loadGame(db: ArenaDatabaseClient, gameId: string): Promise
         .map((answer) => ({
           playerId: answer.playerId,
           lines: answer.lines ?? [answer.text, "", ""],
+          ...(answer.prompt === null || answer.prompt === storedThriplash.prompt
+            ? {}
+            : { prompt: answer.prompt }),
         })),
       votes: voteRows.filter((vote) => vote.thriplashId === storedThriplash.id).map(toVote),
       ...(storedThriplash.scores === null ? {} : { scores: storedThriplash.scores }),

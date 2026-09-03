@@ -16,6 +16,7 @@ export function createEmptyLiveState(): LiveState {
   return {
     gameId: null,
     roomCode: null,
+    audienceEnabled: null,
     startedAt: null,
     endedAt: null,
     updatedAt: null,
@@ -76,6 +77,8 @@ function createPlayerState(player: PlayerRef): LivePlayerState {
     activity: "waiting",
     prompt: null,
     reasoning: "",
+    reasoningVisible: null,
+    attempts: [],
     draft: null,
     answer: null,
     vote: null,
@@ -115,6 +118,7 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
       ...createEmptyLiveState(),
       gameId: event.gameId,
       roomCode: event.roomCode,
+      audienceEnabled: event.audienceEnabled ?? null,
       updatedAt: event.at,
     };
   }
@@ -151,6 +155,8 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
             activity: "waiting" as const,
             prompt: null,
             reasoning: "",
+            reasoningVisible: null,
+            attempts: [],
             draft: null,
             answer: null,
             vote: null,
@@ -163,6 +169,8 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         activity: "thinking",
         prompt: event.prompt,
         reasoning: "",
+        reasoningVisible: null,
+        attempts: [],
         draft: null,
         answer: null,
         vote: null,
@@ -180,15 +188,19 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         draft: event.text,
       }));
     case "trace.completed": {
+      const reasoningVisible = event.reasoningVisible ?? event.reasoning.trim().length > 0;
       state = updatePlayer(state, event.playerId, (player) => ({
         ...player,
-        reasoning: event.reasoning || player.reasoning,
+        reasoning: reasoningVisible ? (event.reasoning || player.reasoning) : "",
+        reasoningVisible,
+        attempts: event.attempts ?? [],
         answer: player.vote?.prompt === event.prompt ? player.answer : event.answer,
       }));
       return addTrace(state, {
         playerId: event.playerId,
         prompt: event.prompt,
         reasoning: event.reasoning,
+        ...(event.reasoningVisible === undefined ? {} : { reasoningVisible: event.reasoningVisible }),
         answer: event.answer,
         ...(event.usage === undefined ? {} : { usage: event.usage }),
         ...(event.attempts === undefined ? {} : { attempts: event.attempts }),
@@ -223,6 +235,8 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         activity: "voting",
         prompt: event.prompt,
         reasoning: "",
+        reasoningVisible: null,
+        attempts: [],
         vote: { prompt: event.prompt, options: [...event.options], choice: null },
       }));
     }
@@ -312,8 +326,9 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
       return state;
     case "matchup.observed":
     case "scoreboard.observed":
-    case "audience.votes":
       return state;
+    case "audience.votes":
+      return { ...state, audienceEnabled: true };
   }
 }
 

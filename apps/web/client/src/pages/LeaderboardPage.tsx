@@ -1,16 +1,9 @@
-import { useState } from "react";
-
-import type { LeaderboardPopulation, LeaderboardResponse } from "../../../shared/types.js";
+import type { LeaderboardResponse } from "../../../shared/types.js";
 import { useApi } from "../hooks/useApi.js";
-
-const POPULATIONS: ReadonlyArray<readonly [LeaderboardPopulation, string]> = [
-  ["player", "models"],
-  ["audience", "chat"],
-  ["blended", "both"],
-];
+import { POPULATIONS, usePopulation } from "../hooks/usePopulation.js";
 
 export function LeaderboardPage() {
-  const [population, setPopulation] = useState<LeaderboardPopulation>("player");
+  const [population, setPopulation] = usePopulation();
   const { data, loading, error } = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}`);
   const entries = data?.entries ?? [];
 
@@ -35,6 +28,11 @@ export function LeaderboardPage() {
           {population === "player" ? "No rated matchups yet." : "Chat voting is not wired up yet, so there is nothing to rate here."}
         </p>
       )}
+      {data?.audienceVotesInferred && population !== "player" && (
+        <p className="note leaderboard__inference">
+          Chat votes are inferred from the game’s published percentages against the six known player votes.
+        </p>
+      )}
       {entries.length > 0 && (
         <table className="board">
           <thead>
@@ -47,7 +45,11 @@ export function LeaderboardPage() {
                 entry.intervalHigh - entry.rating,
               ));
               return (
-                <tr key={entry.modelId}>
+                <tr
+                  key={entry.modelId}
+                  data-benched={entry.benched}
+                  title={entry.benched ? entry.benchReason ?? "benched" : undefined}
+                >
                   <td className="num dim">{index + 1}</td>
                   <td><strong>{entry.name}</strong><span className="board__id">{entry.modelId}</span></td>
                   <td className="num board__rating" title={`95% bootstrap interval: ${entry.intervalLow}–${entry.intervalHigh}`}>
@@ -60,7 +62,6 @@ export function LeaderboardPage() {
                   <td className="num">{entry.wins}</td>
                   <td className="num" title="wins–losses–ties">
                     {entry.matchupWins}–{entry.matchupLosses}{entry.matchupTies > 0 ? `–${entry.matchupTies}` : ""}
-                    <span className="dim"> ({Math.round(entry.matchupWinRate * 100)}%)</span>
                   </td>
                 </tr>
               );

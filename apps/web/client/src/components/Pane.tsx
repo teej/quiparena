@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-import type { LivePlayerState } from "../../../shared/types.js";
+import type { AnswerTrace, LivePlayerState } from "../../../shared/types.js";
 import { softColor } from "../color.js";
 
 export const STATUS: Record<LivePlayerState["activity"], string> = {
@@ -23,9 +23,15 @@ export function answerText(player: LivePlayerState): string | null {
   return player.answer ?? player.draft;
 }
 
-export function Pane({ player, index }: { player: LivePlayerState; index: number }) {
+export function Pane({ player, index, trace }: { player: LivePlayerState; index: number; trace?: AnswerTrace }) {
   const answer = answerText(player);
   const streaming = player.activity === "thinking" || player.activity === "voting";
+  const attempts = player.attempts.length > 0 ? player.attempts : trace?.attempts ?? [];
+  const reasoningVisible = player.reasoningVisible ?? (trace
+    ? trace.reasoningVisible ?? trace.reasoning.trim().length > 0
+    : null);
+  const fastRetry = attempts.some((attempt) => attempt.kind === "fast");
+  const revisions = attempts.filter((attempt) => attempt.kind === "corrective").length;
   return (
     <article
       className="pane"
@@ -40,7 +46,15 @@ export function Pane({ player, index }: { player: LivePlayerState; index: number
       </header>
       <p className="pane__prompt">{player.prompt ?? (player.activity === "waiting" ? "" : "no prompt")}</p>
       <div className="pane__stream">
-        <pre className="pane__reasoning">{player.reasoning}{streaming && <span className="caret" aria-hidden="true" />}</pre>
+        {reasoningVisible === false
+          ? <p className="pane__no-reasoning">no visible reasoning</p>
+          : <pre className="pane__reasoning">{player.reasoning}{streaming && <span className="caret" aria-hidden="true" />}</pre>}
+        {(fastRetry || revisions > 0) && (
+          <div className="pane__trace-tags" aria-label="Trace attempts">
+            {fastRetry && <span>retry</span>}
+            {revisions > 0 && <span>revised {revisions}x</span>}
+          </div>
+        )}
       </div>
       <p className="pane__answer" data-kind={player.vote ? "vote" : "answer"}>
         {answer ?? <span className="pane__blank">{player.vote ? "voting" : player.activity === "waiting" ? "" : "none"}</span>}

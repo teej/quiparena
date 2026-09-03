@@ -108,6 +108,7 @@ export const answers = pgTable("answers", {
   gameId: text("game_id").notNull().references(() => games.id, { onDelete: "cascade" }),
   playerId: text("player_id").notNull(),
   answerIndex: integer("answer_index").notNull(),
+  prompt: text("prompt"),
   text: text("text").notNull(),
   blank: boolean("blank").notNull().default(false),
   lines: jsonb("lines").$type<[string, string, string]>(),
