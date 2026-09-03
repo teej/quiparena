@@ -94,7 +94,13 @@ component_pid() {
   local file
   file=$(pid_file "$1")
   [ -s "$file" ] || return 1
-  tr -d '[:space:]' < "$file"
+  tr -d '[:space:]' 2>/dev/null < "$file" || true
+}
+
+read_state_file() {
+  local file=$1 fallback=$2 value
+  value=$(tr -d '[:space:]' 2>/dev/null < "$file" || true)
+  printf '%s\n' "${value:-$fallback}"
 }
 
 pid_alive() {
@@ -281,6 +287,13 @@ clear_runtime_config() {
   rm -f "$MODE_FILE" "$PORT_FILE" "$VITE_PORT_FILE" "$HOST_AGENT_ENABLED_FILE" "$LOOP_ENABLED_FILE"
 }
 
+clear_component_pid_files() {
+  local name
+  for name in $OPS_COMPONENTS; do
+    rm -f "$(pid_file "$name")"
+  done
+}
+
 cleanup_failed_up() {
   local status=$? name pid
   trap - EXIT INT TERM
@@ -449,6 +462,7 @@ ops_down() {
     stop_after_term host-agent
     rm -f "$LOOP_STOP_FILE"
   fi
+  clear_component_pid_files
   clear_runtime_config
   printf 'lobby down\n'
 }
@@ -463,9 +477,8 @@ component_status() {
     else
       printf '%-10s pid %-7s MISMATCH\n' "$name" "$pid"
     fi
-  elif [ -n "$pid" ]; then
-    printf '%-10s stopped   stale pid %s\n' "$name" "$pid"
   else
+    rm -f "$(pid_file "$name")"
     printf '%-10s stopped\n' "$name"
   fi
 }
@@ -474,20 +487,22 @@ ops_status() {
   ensure_dirs
   load_environment
   local name code confirmed base site health games mode active_port active_vite_port host_agent_enabled loop_enabled
-  mode=$(tr -d '[:space:]' < "$MODE_FILE" 2>/dev/null || true)
-  case "$mode" in production|development) ;; *) mode=production ;; esac
-  active_port=$(tr -d '[:space:]' < "$PORT_FILE" 2>/dev/null || true)
+  mode=$(read_state_file "$MODE_FILE" prod)
+  case "$mode" in
+    development|dev) mode=development ;;
+    production|prod) mode=production ;;
+    *) mode=production ;;
+  esac
+  active_port=$(read_state_file "$PORT_FILE" "$PORT")
   case "$active_port" in ''|*[!0-9]*) active_port=$PORT ;; esac
-  active_vite_port=$(tr -d '[:space:]' < "$VITE_PORT_FILE" 2>/dev/null || true)
+  active_vite_port=$(read_state_file "$VITE_PORT_FILE" "$VITE_PORT")
   case "$active_vite_port" in ''|*[!0-9]*) active_vite_port=$VITE_PORT ;; esac
-  host_agent_enabled=$(tr -d '[:space:]' < "$HOST_AGENT_ENABLED_FILE" 2>/dev/null || true)
+  host_agent_enabled=$(read_state_file "$HOST_AGENT_ENABLED_FILE" yes)
   case "$host_agent_enabled" in yes|no) ;; *) host_agent_enabled=yes ;; esac
-  loop_enabled=$(tr -d '[:space:]' < "$LOOP_ENABLED_FILE" 2>/dev/null || true)
+  loop_enabled=$(read_state_file "$LOOP_ENABLED_FILE" yes)
   case "$loop_enabled" in yes|no) ;; *) loop_enabled=yes ;; esac
 
-  for name in host-agent web; do component_status "$name"; done
-  if [ "$mode" = development ] || [ -s "$(pid_file vite)" ]; then component_status vite; fi
-  component_status loop
+  for name in $OPS_COMPONENTS; do component_status "$name"; done
 
   base=$(local_web_url "$active_port")
   if [ "$mode" = development ]; then
