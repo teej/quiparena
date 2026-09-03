@@ -1,0 +1,104 @@
+/**
+ * @quiparena/core - domain types shared by the harness, the arena worker, and the web app.
+ *
+ * Quiplash 3 in one paragraph: 3-8 players. Rounds 1 and 2: every player gets two
+ * prompts, every prompt is shared by exactly two players, and everyone who did not
+ * write for a prompt votes between its two answers. Round 2 scores double. Round 3
+ * ("Thriplash"): everyone answers the same prompt with three lines, everyone votes
+ * for one entry (not their own). The audience (if enabled) votes in every round.
+ */
+
+export type RoundNumber = 1 | 2 | 3;
+
+/** Who cast a vote. Models are `player`; Twitch/audience humans are `audience`. */
+export type VotePopulation = "player" | "audience";
+
+export interface PlayerRef {
+  /** Stable id within a game (seat or ecast player id). */
+  id: string;
+  /** Display name shown in the game, 12 chars max in Quiplash 3. */
+  name: string;
+  /** Model slug (e.g. "openai/gpt-5.5") when the player is a model; null for humans. */
+  modelId: string | null;
+}
+
+export interface Answer {
+  playerId: string;
+  text: string;
+  /** True when the player submitted nothing before the timer (the game shows a "no answer"). */
+  blank: boolean;
+}
+
+export interface Vote {
+  voterId: string;
+  population: VotePopulation;
+  /** Index into Matchup.answers (rounds 1-2) or into ThriplashEntry list (round 3). */
+  choice: number;
+  /** Audience votes may arrive as an aggregate count rather than one row per human. */
+  weight?: number;
+}
+
+/** A head-to-head prompt in rounds 1-2. This is the atomic unit for ratings. */
+export interface Matchup {
+  id: string;
+  gameId: string;
+  round: 1 | 2;
+  /** Position of this matchup inside the round, in the order the game presented it. */
+  index: number;
+  prompt: string;
+  answers: [Answer, Answer];
+  votes: Vote[];
+  /** Points awarded per player, if the harness observed them. */
+  scores?: Record<string, number>;
+}
+
+export interface ThriplashEntry {
+  playerId: string;
+  lines: [string, string, string];
+}
+
+export interface Thriplash {
+  gameId: string;
+  prompt: string;
+  entries: ThriplashEntry[];
+  votes: Vote[];
+  scores?: Record<string, number>;
+}
+
+export interface Game {
+  id: string;
+  roomCode: string;
+  startedAt: string;
+  endedAt?: string;
+  players: PlayerRef[];
+  matchups: Matchup[];
+  thriplash?: Thriplash;
+  /** Final standings if observed: playerId -> total score. */
+  finalScores?: Record<string, number>;
+}
+
+/**
+ * Events emitted by the harness/arena. Persistent events form the game record;
+ * ephemeral events stream to the website but are not stored individually.
+ */
+export type GameEvent =
+  | { type: "game.created"; gameId: string; roomCode: string; at: string }
+  | { type: "player.joined"; gameId: string; player: PlayerRef; at: string }
+  | { type: "game.started"; gameId: string; at: string }
+  | { type: "round.started"; gameId: string; round: RoundNumber; at: string }
+  | { type: "prompt.dealt"; gameId: string; round: RoundNumber; playerId: string; prompt: string; deadlineMs: number; at: string }
+  | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; at: string }
+  | { type: "vote.requested"; gameId: string; round: RoundNumber; playerId: string; prompt: string; options: string[]; deadlineMs: number; at: string }
+  | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; at: string }
+  | { type: "matchup.resolved"; gameId: string; matchup: Matchup; at: string }
+  | { type: "thriplash.resolved"; gameId: string; thriplash: Thriplash; at: string }
+  | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; at: string }
+  | { type: "harness.error"; gameId?: string; playerId?: string; message: string; at: string };
+
+/** Ephemeral streaming events, for the live site only. */
+export type StreamEvent =
+  | { type: "thinking.delta"; gameId: string; playerId: string; text: string; at: string }
+  | { type: "answer.draft"; gameId: string; playerId: string; text: string; at: string }
+  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number }; at: string };
+
+export type AnyEvent = GameEvent | StreamEvent;

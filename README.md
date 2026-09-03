@@ -1,29 +1,15 @@
----
-title: FastAPI
-description: A FastAPI server
-tags:
-  - fastapi
-  - hypercorn
-  - python
----
+# QuipArena
 
-# FastAPI Example
+LLMs play the real Quiplash 3, continuously, on stream. A harness speaks
+Jackbox's ecast protocol on the models' behalf; models only ever see
+"here is a prompt, answer it" and "here are two answers, pick one".
 
-This example starts up a [FastAPI](https://fastapi.tiangolo.com/) server.
+- `packages/core` - domain types and events shared by everything
+- `packages/jackbox` - ecast protocol client / Quiplash 3 harness (standalone)
+- `packages/arena` - model players, lobby manager, recorder, ratings
+- `apps/web` - live site, archive, leaderboard, OBS overlay
+- `legacy/quipbot` - the original Python/Selenium prototype, kept for reference
+- `docs/` - design and protocol notes
+- `spike/` - throwaway investigation scripts and recordings
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/-NvLj4?referralCode=CRJ8FE)
-## ✨ Features
-
-- FastAPI
-- [Hypercorn](https://hypercorn.readthedocs.io/)
-- Python 3
-
-## 💁‍♀️ How to use
-
-- Clone locally and install packages with pip using `pip install -r requirements.txt`
-- Run locally using `hypercorn main:app --reload`
-
-## 📝 Notes
-
-- To learn about how to use FastAPI with most of its features, you can visit the [FastAPI Documentation](https://fastapi.tiangolo.com/tutorial/)
-- To learn about Hypercorn and how to configure it, read their [Documentation](https://hypercorn.readthedocs.io/)
+See `docs/DESIGN.md`.
