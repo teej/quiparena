@@ -5,8 +5,15 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "bin": { "quiparena": "./dist/cli.js" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "quiparena": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -21,10 +28,14 @@
     "@quiparena/core": "workspace:*",
     "@quiparena/jackbox": "workspace:*",
     "ai": "7.0.91",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
     "zod": "4.1.8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.18.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.20.5",
     "typescript": "7.0.2",
     "vitest": "4.1.11"

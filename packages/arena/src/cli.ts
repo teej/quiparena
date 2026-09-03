@@ -5,8 +5,13 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import type { PlayerContext } from "@quiparena/jackbox";
+import { desc } from "drizzle-orm";
 
+import { openDb, type ArenaDatabase } from "./db/client.js";
+import { games } from "./db/schema.js";
 import { ConsoleSink, ModelPlayer, type ModelPlayerConfig } from "./model-player.js";
+import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js";
+import { loadGame } from "./recorder.js";
 import { findRosterModel, loadRoster, validateRoster, type ModelRoster } from "./registry.js";
 
 function usage(): string {
@@ -15,10 +20,24 @@ function usage(): string {
     "  quiparena ask --model <slug> --prompt <text> [--deadline-s 30]",
     "  quiparena vote --model <slug> --prompt <text> --a <answer> --b <answer> [--deadline-s 30]",
     "  quiparena roster",
+    "  quiparena db migrate",
+    "  quiparena ratings compute [--bootstrap 200]",
+    "  quiparena ratings show [--population blended]",
+    "  quiparena games list [--limit 20]",
+    "  quiparena games show <id>",
     "",
     "From the workspace:",
     "  pnpm --filter @quiparena/arena ask --model <slug> --prompt <text>",
   ].join("\n");
+}
+
+async function usingDb<T>(run: (db: ArenaDatabase) => Promise<T>): Promise<T> {
+  const db = await openDb();
+  try {
+    return await run(db);
+  } finally {
+    await db.close();
+  }
 }
 
 function required(value: string | undefined, flag: string): string {
@@ -142,6 +161,108 @@ async function runRoster(args: string[]): Promise<void> {
   if (!report.ok) process.exitCode = 1;
 }
 
+async function runDb(args: string[]): Promise<void> {
+  const [command, ...rest] = args;
+  if (command !== "migrate") throw new Error(`Usage: quiparena db migrate`);
+  parseArgs({ args: rest, options: {}, strict: true });
+  await usingDb(async (db) => {
+    console.log(`Database migrations are current (${db.$driver}).`);
+  });
+}
+
+function ratingPopulation(value: string | undefined): RatingPopulation {
+  const population = value ?? "blended";
+  if (population !== "player" && population !== "audience" && population !== "blended") {
+    throw new Error("--population must be player, audience, or blended");
+  }
+  return population;
+}
+
+async function runRatings(args: string[]): Promise<void> {
+  const [command, ...rest] = args;
+  if (command === "compute") {
+    const { values } = parseArgs({
+      args: rest,
+      options: { bootstrap: { type: "string" } },
+      strict: true,
+    });
+    const bootstrapResamples = values.bootstrap === undefined ? undefined : Number(values.bootstrap);
+    if (bootstrapResamples !== undefined
+      && (!Number.isInteger(bootstrapResamples) || bootstrapResamples < 0)) {
+      throw new Error("--bootstrap must be a non-negative integer");
+    }
+    await usingDb(async (db) => {
+      const result = await computeRatings(db, {
+        ...(bootstrapResamples === undefined ? {} : { bootstrapResamples }),
+      });
+      console.log(`Computed ${result.method} ratings at ${result.computedAt}.`);
+      for (const population of ["player", "audience", "blended"] as const) {
+        console.log(`${population}: ${result.populations[population].length} models`);
+      }
+    });
+    return;
+  }
+  if (command === "show") {
+    const { values } = parseArgs({
+      args: rest,
+      options: { population: { type: "string" } },
+      strict: true,
+    });
+    const population = ratingPopulation(values.population);
+    await usingDb(async (db) => {
+      const entries = await leaderboard(db, population);
+      if (entries.length === 0) {
+        console.log(`No ${population} rating snapshot. Run \"quiparena ratings compute\" first.`);
+        return;
+      }
+      for (const [index, entry] of entries.entries()) {
+        console.log(
+          `${String(index + 1).padStart(2)}  ${entry.rating.toFixed(0).padStart(4)}`
+          + `  [${entry.lower95.toFixed(0)}, ${entry.upper95.toFixed(0)}]`
+          + `  ${entry.displayName} (${entry.modelSlug})`
+          + `  games=${entry.stats.games} wins=${entry.stats.wins}`,
+        );
+      }
+    });
+    return;
+  }
+  throw new Error("Usage: quiparena ratings <compute|show>");
+}
+
+async function runGames(args: string[]): Promise<void> {
+  const [command, ...rest] = args;
+  if (command === "list") {
+    const { values } = parseArgs({
+      args: rest,
+      options: { limit: { type: "string" } },
+      strict: true,
+    });
+    const limit = values.limit === undefined ? 20 : Number(values.limit);
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
+    await usingDb(async (db) => {
+      const rows = await db.select().from(games).orderBy(desc(games.startedAt)).limit(limit);
+      for (const game of rows) {
+        console.log(
+          `${game.id}  ${game.roomCode || "-"}  ${game.status}`
+          + `  ${game.startedAt.toISOString()}${game.endedAt ? ` → ${game.endedAt.toISOString()}` : ""}`,
+        );
+      }
+    });
+    return;
+  }
+  if (command === "show") {
+    const [id, ...extra] = rest;
+    if (!id || extra.length > 0) throw new Error("Usage: quiparena games show <id>");
+    await usingDb(async (db) => {
+      const game = await loadGame(db, id);
+      if (!game) throw new Error(`Game not found: ${id}`);
+      console.log(JSON.stringify(game, null, 2));
+    });
+    return;
+  }
+  throw new Error("Usage: quiparena games <list|show>");
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const [command, ...args] = argv;
   switch (command) {
@@ -153,6 +274,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     case "roster":
       await runRoster(args);
+      break;
+    case "db":
+      await runDb(args);
+      break;
+    case "ratings":
+      await runRatings(args);
+      break;
+    case "games":
+      await runGames(args);
       break;
     case "help":
     case "--help":

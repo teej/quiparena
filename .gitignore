@@ -10,6 +10,7 @@ __pycache__/
 *.py[cod]
 .venv/
 coverage/
+packages/arena/.data/
 spike/recordings/*.jsonl
 spike/recordings/*.png
 spike/recordings/*.html
