@@ -17,7 +17,15 @@ export async function main(): Promise<void> {
   let store: Store;
   if (databaseUrlSet || databaseRequested) {
     const db = await openDb();
-    store = new DbStore(db);
+    const dbStore = new DbStore(db);
+    store = dbStore;
+    // Housekeeping: the ratings pass also abandons games left "running" for 30+ minutes and
+    // backfills scores, so run it at startup and on a timer rather than only after game.ended.
+    const sweep = () => void dbStore.recomputeRatings().catch((error: unknown) => {
+      console.error("QuipArena housekeeping failed", error);
+    });
+    sweep();
+    setInterval(sweep, 5 * 60_000).unref();
     console.log(`QuipArena store: database (${db.$driver})`);
   } else {
     store = new InMemoryStore(true);
