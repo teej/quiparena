@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "INGEST_TOKEN=${INGEST_TOKEN:-quiparena-dev} sh -c 'tsx watch server/index.ts & vite --host 127.0.0.1; kill 0'",
     "build": "vite build && tsc -p tsconfig.server.json",
-    "start": "NODE_ENV=production node dist/server/index.js",
+    "start": "NODE_ENV=production HOST=${HOST:-0.0.0.0} node dist/server/index.js",
     "demo": "INGEST_TOKEN=${INGEST_TOKEN:-quiparena-demo} tsx server/demo-runner.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
