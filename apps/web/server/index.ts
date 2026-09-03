@@ -12,10 +12,15 @@ export async function main(): Promise<void> {
   if (!ingestToken) throw new Error("INGEST_TOKEN is required");
   const port = Number(process.env["PORT"] ?? 8787);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error("PORT must be a valid TCP port");
+  const requestedStore = process.env["QUIPARENA_STORE"]?.trim().toLowerCase() || undefined;
+  if (requestedStore !== undefined && requestedStore !== "db" && requestedStore !== "memory") {
+    throw new Error("QUIPARENA_STORE must be either db or memory");
+  }
   const databaseUrlSet = process.env["DATABASE_URL"] !== undefined;
-  const databaseRequested = process.env["QUIPARENA_STORE"]?.trim().toLowerCase() === "db";
+  const databaseRequested = requestedStore === "db"
+    || (requestedStore === undefined && databaseUrlSet);
   let store: Store;
-  if (databaseUrlSet || databaseRequested) {
+  if (databaseRequested) {
     const db = await openDb();
     const dbStore = new DbStore(db);
     store = dbStore;

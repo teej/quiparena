@@ -11,14 +11,30 @@ ROOM_FILE="$DATA_DIR/room-code"
 ROOM_STATUS_FILE="$ROOM_FILE.status.json"
 TOKEN_FILE="$DATA_DIR/ingest-token"
 LOOP_STOP_FILE="$RUN_DIR/loop.stop"
+MODE_FILE="$RUN_DIR/mode"
+PORT_FILE="$RUN_DIR/port"
+VITE_PORT_FILE="$RUN_DIR/vite-port"
+HOST_AGENT_ENABLED_FILE="$RUN_DIR/host-agent-enabled"
+LOOP_ENABLED_FILE="$RUN_DIR/loop-enabled"
+OPS_COMPONENTS="host-agent web vite loop"
 
 usage() {
   printf '%s\n' \
-    "usage: pnpm ops up" \
+    "usage: pnpm ops up [--dev] [--no-host-agent] [--no-loop] [--room CODE]" \
     "       pnpm ops down [--graceful]" \
     "       pnpm ops restart [--graceful]" \
     "       pnpm ops status" \
-    "       pnpm ops logs <host-agent|web|loop> [-f]"
+    "       pnpm ops logs <host-agent|web|vite|loop> [-f]" \
+    "" \
+    "up options:" \
+    "  --dev            run the tsx server watcher and Vite (site port: VITE_PORT, default 5173)" \
+    "  --no-host-agent  do not capture the screen; use --room or repo-root .data/room-code" \
+    "  --no-loop        do not connect workers to a room" \
+    "  --room CODE      initial room for the loop when --no-host-agent is set" \
+    "" \
+    "environment:" \
+    "  PORT             web/API port (default 8787)" \
+    "  VITE_PORT        development site port (default 5173)"
 }
 
 die() {
@@ -28,6 +44,15 @@ die() {
 
 ensure_dirs() {
   mkdir -p "$LOG_DIR" "$RUN_DIR"
+}
+
+validate_port() {
+  local name=$1 value=$2
+  case "$value" in
+    ''|*[!0-9]*) die "$name must be a TCP port from 1 to 65535" ;;
+  esac
+  [ "$value" -ge 1 ] && [ "$value" -le 65535 ] \
+    || die "$name must be a TCP port from 1 to 65535"
 }
 
 load_environment() {
@@ -52,8 +77,13 @@ load_environment() {
     fi
   fi
   export INGEST_TOKEN
-  WEB_INGEST_URL=${WEB_INGEST_URL:-ws://127.0.0.1:8787/ingest}
-  export WEB_INGEST_URL
+  PORT=${PORT:-8787}
+  VITE_PORT=${VITE_PORT:-5173}
+  HOST=${HOST:-127.0.0.1}
+  validate_port PORT "$PORT"
+  validate_port VITE_PORT "$VITE_PORT"
+  WEB_INGEST_URL=${WEB_INGEST_URL:-ws://127.0.0.1:${PORT}/ingest}
+  export HOST PORT VITE_PORT WEB_INGEST_URL
 }
 
 pid_file() {
@@ -78,6 +108,8 @@ component_command_matches() {
     host-agent:*packages/arena/dist/cli.js*host-agent*) return 0 ;;
     loop:*packages/arena/dist/cli.js*loop*) return 0 ;;
     web:*apps/web/dist/server/index.js*) return 0 ;;
+    web:*tsx/dist/cli.mjs*watch*server/index.ts*) return 0 ;;
+    vite:*vite/bin/vite.js*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -90,7 +122,7 @@ component_running() {
 
 assert_no_components_running() {
   local name pid found=0
-  for name in host-agent web loop; do
+  for name in $OPS_COMPONENTS; do
     pid=$(component_pid "$name" 2>/dev/null || true)
     if pid_alive "$pid"; then
       printf 'ops: %s already running (pid %s)\n' "$name" "$pid" >&2
@@ -103,10 +135,13 @@ assert_no_components_running() {
 }
 
 start_component() {
-  local name=$1 log pid
-  shift
+  local name=$1 cwd=$2 log pid
+  shift 2
   log="$LOG_DIR/$name.log"
-  nohup "$@" >> "$log" 2>&1 </dev/null &
+  (
+    cd "$cwd"
+    exec nohup "$@" >> "$log" 2>&1 </dev/null
+  ) &
   pid=$!
   printf '%s\n' "$pid" > "$(pid_file "$name")"
   UP_STARTED="$name $UP_STARTED"
@@ -174,12 +209,36 @@ wait_for_room() {
   die "no confirmed room after ${timeout}s"
 }
 
-web_base_url() {
-  node -e '
-    const url = new URL(process.argv[1]);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-    process.stdout.write(url.origin);
-  ' "$WEB_INGEST_URL"
+normalize_room_code() {
+  local code
+  code=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+  case "$code" in
+    [A-Z][A-Z][A-Z][A-Z]) printf '%s\n' "$code" ;;
+    *) return 1 ;;
+  esac
+}
+
+wait_for_external_room() {
+  local requested=${1:-} timeout=${OPS_ROOM_WAIT_SECONDS:-300} deadline code
+  deadline=$(( $(date +%s) + timeout ))
+  printf 'waiting for an ecast-confirmed room from --room or .data/room-code'
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -n "$requested" ]; then code=$requested; else code=$(room_code 2>/dev/null || true); fi
+    if [ -n "$code" ] && ecast_confirms "$code"; then
+      printf ' %s\n' "$code"
+      ROOM_CODE=$code
+      export ROOM_CODE
+      return 0
+    fi
+    printf '.'
+    sleep 2
+  done
+  printf '\n' >&2
+  die "no confirmed room after ${timeout}s"
+}
+
+local_web_url() {
+  printf 'http://127.0.0.1:%s\n' "$1"
 }
 
 wait_for_web() {
@@ -196,6 +255,32 @@ wait_for_web() {
   die "web health check did not pass within 30s"
 }
 
+wait_for_site() {
+  local base=$1 deadline vite_pid
+  deadline=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    vite_pid=$(component_pid vite 2>/dev/null || true)
+    pid_alive "$vite_pid" || die "vite exited during startup"
+    if curl --max-time 2 -fsS "$base/" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "Vite did not serve the site within 30s"
+}
+
+write_runtime_config() {
+  printf '%s\n' "$1" > "$MODE_FILE"
+  printf '%s\n' "$PORT" > "$PORT_FILE"
+  printf '%s\n' "$VITE_PORT" > "$VITE_PORT_FILE"
+  printf '%s\n' "$2" > "$HOST_AGENT_ENABLED_FILE"
+  printf '%s\n' "$3" > "$LOOP_ENABLED_FILE"
+}
+
+clear_runtime_config() {
+  rm -f "$MODE_FILE" "$PORT_FILE" "$VITE_PORT_FILE" "$HOST_AGENT_ENABLED_FILE" "$LOOP_ENABLED_FILE"
+}
+
 cleanup_failed_up() {
   local status=$? name pid
   trap - EXIT INT TERM
@@ -206,11 +291,33 @@ cleanup_failed_up() {
         kill -TERM "$pid" 2>/dev/null || true
       fi
     done
+    clear_runtime_config
   fi
   exit "$status"
 }
 
 ops_up() {
+  local mode=production start_host_agent=yes start_loop=yes requested_room="" argument
+  while [ "$#" -gt 0 ]; do
+    argument=$1
+    shift
+    case "$argument" in
+      --dev) mode=development ;;
+      --no-host-agent) start_host_agent=no ;;
+      --no-loop) start_loop=no ;;
+      --room)
+        [ "$#" -gt 0 ] || die "--room requires a four-letter code"
+        requested_room=$(normalize_room_code "$1") \
+          || die "--room requires a four-letter code"
+        shift
+        ;;
+      *) die "unknown up option: $argument" ;;
+    esac
+  done
+  if [ -n "$requested_room" ] && [ "$start_host_agent" = yes ]; then
+    die "--room may only be used with --no-host-agent"
+  fi
+
   ensure_dirs
   load_environment
   assert_no_components_running
@@ -220,19 +327,48 @@ ops_up() {
 
   UP_STARTED=""
   trap cleanup_failed_up EXIT INT TERM
-  start_component host-agent node "$ROOT_DIR/packages/arena/dist/cli.js" \
-    host-agent --room-file "$ROOM_FILE"
-  wait_for_room
-  start_component web env QUIPARENA_STORE=db HOST="${HOST:-127.0.0.1}" \
-    node "$ROOT_DIR/apps/web/dist/server/index.js"
-  local base
-  base=$(web_base_url)
+  write_runtime_config "$mode" "$start_host_agent" "$start_loop"
+
+  if [ "$start_host_agent" = yes ]; then
+    start_component host-agent "$ROOT_DIR" node "$ROOT_DIR/packages/arena/dist/cli.js" \
+      host-agent --room-file "$ROOM_FILE"
+  fi
+  if [ "$start_loop" = yes ]; then
+    if [ "$start_host_agent" = yes ]; then
+      wait_for_room
+    else
+      if [ -n "$requested_room" ]; then printf '%s\n' "$requested_room" > "$ROOM_FILE"; fi
+      wait_for_external_room "$requested_room"
+    fi
+  fi
+
+  local base site store
+  base=$(local_web_url "$PORT")
+  store=${QUIPARENA_STORE:-db}
+  if [ "$mode" = development ]; then
+    start_component web "$ROOT_DIR/apps/web" env NODE_ENV=development \
+      QUIPARENA_STORE="$store" HOST="$HOST" PORT="$PORT" \
+      "$ROOT_DIR/apps/web/node_modules/.bin/tsx" watch server/index.ts
+    start_component vite "$ROOT_DIR/apps/web" env PORT="$PORT" VITE_PORT="$VITE_PORT" \
+      "$ROOT_DIR/apps/web/node_modules/.bin/vite" --host 127.0.0.1 \
+      --port "$VITE_PORT" --strictPort
+    site=$(local_web_url "$VITE_PORT")
+  else
+    start_component web "$ROOT_DIR" env NODE_ENV=production \
+      QUIPARENA_STORE="$store" HOST="$HOST" PORT="$PORT" \
+      node "$ROOT_DIR/apps/web/dist/server/index.js"
+    site=$base
+  fi
   wait_for_web "$base"
-  start_component loop node "$ROOT_DIR/packages/arena/dist/cli.js" \
-    loop --room "$ROOM_CODE" --room-file "$ROOM_FILE" --ingest "$WEB_INGEST_URL" \
-    --stop-file "$LOOP_STOP_FILE"
+  if [ "$mode" = development ]; then wait_for_site "$site"; fi
+  if [ "$start_loop" = yes ]; then
+    start_component loop "$ROOT_DIR" node "$ROOT_DIR/packages/arena/dist/cli.js" \
+      loop --room "$ROOM_CODE" --room-file "$ROOM_FILE" --ingest "$WEB_INGEST_URL" \
+      --stop-file "$LOOP_STOP_FILE"
+  fi
   trap - EXIT INT TERM
-  printf 'lobby up  room %s  web %s\n' "$ROOM_CODE" "$base"
+  printf 'lobby up  room %s  site %s\n' "${ROOM_CODE:-none}" "$site"
+  if [ "$mode" = development ]; then printf 'api %s  vite port %s\n' "$base" "$VITE_PORT"; fi
 }
 
 signal_component() {
@@ -296,19 +432,24 @@ ops_down() {
       rm -f "$(pid_file loop)"
     fi
     rm -f "$LOOP_STOP_FILE"
+    signal_component vite TERM
+    stop_after_term vite
     signal_component web TERM
     stop_after_term web
     signal_component host-agent TERM
     stop_after_term host-agent
   else
     signal_component loop TERM
+    signal_component vite TERM
     signal_component web TERM
     signal_component host-agent TERM
     stop_after_term loop
+    stop_after_term vite
     stop_after_term web
     stop_after_term host-agent
     rm -f "$LOOP_STOP_FILE"
   fi
+  clear_runtime_config
   printf 'lobby down\n'
 }
 
@@ -316,7 +457,7 @@ component_status() {
   local name=$1 pid uptime
   pid=$(component_pid "$name" 2>/dev/null || true)
   if pid_alive "$pid"; then
-    uptime=$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')
+    uptime=$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ' || true)
     if component_command_matches "$name" "$pid"; then
       printf '%-10s pid %-7s uptime %s\n' "$name" "$pid" "${uptime:-unknown}"
     else
@@ -332,15 +473,40 @@ component_status() {
 ops_status() {
   ensure_dirs
   load_environment
-  local name code confirmed base health games
-  for name in host-agent web loop; do component_status "$name"; done
+  local name code confirmed base site health games mode active_port active_vite_port host_agent_enabled loop_enabled
+  mode=$(tr -d '[:space:]' < "$MODE_FILE" 2>/dev/null || true)
+  case "$mode" in production|development) ;; *) mode=production ;; esac
+  active_port=$(tr -d '[:space:]' < "$PORT_FILE" 2>/dev/null || true)
+  case "$active_port" in ''|*[!0-9]*) active_port=$PORT ;; esac
+  active_vite_port=$(tr -d '[:space:]' < "$VITE_PORT_FILE" 2>/dev/null || true)
+  case "$active_vite_port" in ''|*[!0-9]*) active_vite_port=$VITE_PORT ;; esac
+  host_agent_enabled=$(tr -d '[:space:]' < "$HOST_AGENT_ENABLED_FILE" 2>/dev/null || true)
+  case "$host_agent_enabled" in yes|no) ;; *) host_agent_enabled=yes ;; esac
+  loop_enabled=$(tr -d '[:space:]' < "$LOOP_ENABLED_FILE" 2>/dev/null || true)
+  case "$loop_enabled" in yes|no) ;; *) loop_enabled=yes ;; esac
+
+  for name in host-agent web; do component_status "$name"; done
+  if [ "$mode" = development ] || [ -s "$(pid_file vite)" ]; then component_status vite; fi
+  component_status loop
+
+  base=$(local_web_url "$active_port")
+  if [ "$mode" = development ]; then
+    site=$(local_web_url "$active_vite_port")
+    printf 'site       %s  (Vite port %s)\n' "$site" "$active_vite_port"
+    printf 'api        %s\n' "$base"
+  else
+    site=$base
+    printf 'site       %s\n' "$site"
+  fi
 
   code=$(room_code 2>/dev/null || true)
   confirmed=no
-  if [ -n "$code" ] && host_status_confirms "$code" && ecast_confirms "$code"; then confirmed=yes; fi
+  if [ -n "$code" ] && { [ "$host_agent_enabled" = yes ] || [ "$loop_enabled" = yes ]; } \
+      && ecast_confirms "$code"; then
+    if [ "$host_agent_enabled" = no ] || host_status_confirms "$code"; then confirmed=yes; fi
+  fi
   printf 'room       %s  confirmed %s\n' "${code:-none}" "$confirmed"
 
-  base=$(web_base_url)
   health=$(curl --max-time 3 -fsS "$base/api/health" 2>/dev/null || true)
   if [ -n "$health" ]; then
     HEALTH_JSON="$health" node -e '
@@ -370,15 +536,21 @@ ops_status() {
     printf 'games      unavailable\n'
   fi
 
-  for name in host-agent web loop; do
+  for name in host-agent web; do
     printf '\n[%s] last 3 lines\n' "$name"
     if [ -f "$LOG_DIR/$name.log" ]; then tail -n 3 "$LOG_DIR/$name.log"; else printf '(no log)\n'; fi
   done
+  if [ "$mode" = development ] || [ -f "$LOG_DIR/vite.log" ]; then
+    printf '\n[vite] last 3 lines\n'
+    if [ -f "$LOG_DIR/vite.log" ]; then tail -n 3 "$LOG_DIR/vite.log"; else printf '(no log)\n'; fi
+  fi
+  printf '\n[loop] last 3 lines\n'
+  if [ -f "$LOG_DIR/loop.log" ]; then tail -n 3 "$LOG_DIR/loop.log"; else printf '(no log)\n'; fi
 }
 
 ops_logs() {
   local name=${1:-} follow=${2:-}
-  case "$name" in host-agent|web|loop) ;; *) die "logs requires host-agent, web, or loop" ;; esac
+  case "$name" in host-agent|web|vite|loop) ;; *) die "logs requires host-agent, web, vite, or loop" ;; esac
   [ -z "$follow" ] || [ "$follow" = "-f" ] || die "logs accepts only -f"
   ensure_dirs
   touch "$LOG_DIR/$name.log"
@@ -388,7 +560,7 @@ ops_logs() {
 command=${1:-}
 shift || true
 case "$command" in
-  up) [ "$#" -eq 0 ] || die "up accepts no arguments"; ops_up ;;
+  up) ops_up "$@" ;;
   down) [ "$#" -le 1 ] || die "down accepts only --graceful"; ops_down "${1:-}" ;;
   restart)
     [ "$#" -le 1 ] || die "restart accepts only --graceful"

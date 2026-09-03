@@ -85,12 +85,20 @@ pnpm ops down --graceful
 pnpm ops restart --graceful
 ```
 
-`up` builds, starts host-agent/web/loop in the background, and writes logs and
-pid files under `.data/`. It loads `.env`, persists a generated ingest token if
-needed, and waits for an ecast-confirmed code in `.data/room-code`. Graceful
+`up` builds, starts host-agent/web/loop in the background, and serves the built
+site from the URL printed by `up` and `status`. It writes logs and pid files
+under `.data/`, loads `.env`, persists a generated ingest token if needed, and
+waits for an ecast-confirmed code in the repo-root `.data/room-code`. Ops passes
+that exact path to both host-agent and loop. Graceful
 down sends `SIGUSR1` to the loop, waits up to 20 minutes for `NEW PLAYERS`, then
 stops web and host-agent. `loop --stop-file PATH` and `loop --max-games N` offer
 the same boundary stop for manual runs; `SIGINT` and `SIGTERM` abort immediately.
+
+Use `pnpm ops up --dev` to run the TypeScript server watcher and Vite instead;
+`ops status` prints both the API and Vite site URLs. `PORT` overrides the API
+port and `VITE_PORT` overrides Vite's port. On a machine without screen capture,
+pass `--no-host-agent` and supply `--room CODE` or arrange for another process
+to maintain `.data/room-code`. Pass `--no-loop` as well for a web-only launch.
 
 The VIP chooses **New Players** after every game. Expect a new code and an empty
 lobby; the host agent writes that code to the room file, and the worker waits

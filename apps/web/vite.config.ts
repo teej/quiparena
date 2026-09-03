@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const serverPort = Number(process.env["PORT"] ?? 8787);
+const vitePort = Number(process.env["VITE_PORT"] ?? 5173);
 
 export default defineConfig({
   root: "client",
@@ -11,7 +12,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5173,
+    port: vitePort,
     proxy: {
       "/api": `http://127.0.0.1:${serverPort}`,
       "/ingest": {

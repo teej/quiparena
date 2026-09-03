@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -99,10 +100,13 @@ export function createApp(options: AppOptions): Hono {
   const production = options.production ?? process.env["NODE_ENV"] === "production";
   if (production) {
     const clientRoot = options.clientRoot ?? fileURLToPath(new URL("../client", import.meta.url));
-    if (existsSync(clientRoot)) {
-      app.use("*", serveStatic({ root: clientRoot }));
-      app.get("*", serveStatic({ root: clientRoot, path: "index.html" }));
+    if (!existsSync(join(clientRoot, "index.html"))) {
+      throw new Error(
+        `QuipArena client build is missing from ${clientRoot}. Run: pnpm --filter @quiparena/web build`,
+      );
     }
+    app.use("*", serveStatic({ root: clientRoot }));
+    app.get("*", serveStatic({ root: clientRoot, path: "index.html" }));
   }
 
   app.notFound((context) => context.req.path.startsWith("/api/")
