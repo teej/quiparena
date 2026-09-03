@@ -202,7 +202,16 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
   }
 
   const counts = gamesPlayed(history);
-  const pool = eligible.filter((model) => !selectedSlugs.has(model.slug));
+  const openSeatCount = size - selected.length;
+  const lastParticipants = options.lastGame ? participants(options.lastGame) : new Set<string>();
+  const freshPool = eligible.filter((model) => (
+    !selectedSlugs.has(model.slug) && !lastParticipants.has(model.slug)
+  ));
+  // A rotation means previous non-keepers sit out when the roster is large enough.
+  // If benching leaves too few fresh models, allow them back so the lobby can fill.
+  const pool = freshPool.length >= openSeatCount
+    ? freshPool
+    : eligible.filter((model) => !selectedSlugs.has(model.slug));
   const maxGames = Math.max(0, ...pool.map((model) => counts.get(model.slug) ?? 0));
   const rng = options.rng ?? options.random ?? Math.random;
   while (selected.length < size) {

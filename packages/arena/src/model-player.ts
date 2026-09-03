@@ -59,6 +59,8 @@ export interface ModelPlayerConfig {
   apiKey?: string;
   sink?: EventSink;
   logger?: ModelPlayerLogger;
+  /** Called when generation throws or reaches its deadline, for worker bench accounting. */
+  onFailure?: (error: Error, ctx: PlayerContext) => void;
   random?: () => number;
   /** Dependency-injection seam for AI SDK mock models. */
   languageModel?: LanguageModel;
@@ -123,6 +125,7 @@ export class ModelPlayer implements Player {
   private readonly fallback: string;
   private readonly sink: EventSink | undefined;
   private readonly logger: ModelPlayerLogger;
+  private readonly onFailure: ((error: Error, ctx: PlayerContext) => void) | undefined;
   private readonly random: () => number;
   private readonly languageModel: LanguageModel;
 
@@ -152,6 +155,7 @@ export class ModelPlayer implements Player {
     this.fallback = sanitizeAnswer(config.fallback ?? DEFAULT_FALLBACK, { limit: this.answerLimit });
     this.sink = config.sink;
     this.logger = config.logger ?? DEFAULT_LOGGER;
+    this.onFailure = config.onFailure;
     this.random = config.random ?? Math.random;
 
     if (config.languageModel) {
@@ -282,14 +286,17 @@ export class ModelPlayer implements Player {
             break;
           case "error":
             this.logError(`[${this.modelId}] model stream error`, part.error);
+            this.reportFailure(part.error, ctx);
             break;
         }
       }
     } catch (error) {
       if (controller.signal.aborted) {
         this.logWarn(`[${this.modelId}] generation stopped at the deadline`);
+        this.reportFailure(new Error("Model generation timed out"), ctx);
       } else {
         this.logError(`[${this.modelId}] generation failed`, error);
+        this.reportFailure(error, ctx);
       }
     } finally {
       clearTimeout(timer);
@@ -358,6 +365,15 @@ export class ModelPlayer implements Player {
       this.logger.error(message, error);
     } catch {
       // Logging must never prevent the harness from receiving a response.
+    }
+  }
+
+  private reportFailure(error: unknown, ctx: PlayerContext): void {
+    if (!this.onFailure) return;
+    try {
+      this.onFailure(error instanceof Error ? error : new Error(String(error)), ctx);
+    } catch (reportError) {
+      this.logError(`[${this.modelId}] failure hook failed`, reportError);
     }
   }
 

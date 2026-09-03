@@ -96,6 +96,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
       zod:
         specifier: 4.1.8
         version: 4.1.8
@@ -106,6 +109,9 @@ importers:
       '@types/node':
         specifier: ^22.18.0
         version: 22.20.1
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10

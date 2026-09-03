@@ -30,11 +30,13 @@
     "ai": "7.0.91",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9",
+    "ws": "^8.21.3",
     "zod": "4.1.8"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.18.0",
+    "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.20.5",
     "typescript": "7.0.2",

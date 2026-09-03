@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import type { PlayerContext } from "@quiparena/jackbox";
+import type { AnyEvent, Game } from "@quiparena/core";
+import { ScriptedPlayer, type Player, type PlayerContext } from "@quiparena/jackbox";
 import { desc } from "drizzle-orm";
 
 import { openDb, type ArenaDatabase } from "./db/client.js";
@@ -13,6 +14,12 @@ import { ConsoleSink, ModelPlayer, type ModelPlayerConfig } from "./model-player
 import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js";
 import { loadGame } from "./recorder.js";
 import { findRosterModel, loadRoster, validateRoster, type ModelRoster } from "./registry.js";
+import type { RosterModel } from "./registry.js";
+import { WorkerEventBus } from "./worker/bus.js";
+import { FakeHarness } from "./worker/fake-harness.js";
+import { runGame } from "./worker/game-runner.js";
+import { runLoop } from "./worker/loop.js";
+import { DbSink, IngestSink, JsonlSink, type WorkerSink } from "./worker/sinks.js";
 
 function usage(): string {
   return [
@@ -25,11 +32,18 @@ function usage(): string {
     "  quiparena ratings show [--population blended]",
     "  quiparena games list [--limit 20]",
     "  quiparena games show <id>",
+    "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--record DIR] [--db] [--ingest URL]",
+    "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL]",
+    "  quiparena dry-run [--players 8]",
     "",
     "From the workspace:",
     "  pnpm --filter @quiparena/arena ask --model <slug> --prompt <text>",
   ].join("\n");
 }
+
+const DEFAULT_WORKER_CREDENTIALS = fileURLToPath(
+  new URL("../.data/worker-credentials.json", import.meta.url),
+);
 
 async function usingDb<T>(run: (db: ArenaDatabase) => Promise<T>): Promise<T> {
   const db = await openDb();
@@ -263,6 +277,291 @@ async function runGames(args: string[]): Promise<void> {
   throw new Error("Usage: quiparena games <list|show>");
 }
 
+function playerCount(value: string | undefined, fallback = 8): number {
+  const count = value === undefined ? fallback : Number(value);
+  if (!Number.isInteger(count) || count < 3 || count > 8) {
+    throw new Error("--players must be an integer from 3 to 8");
+  }
+  return count;
+}
+
+function workerRoster(roster: ModelRoster, modelsValue: string | undefined, countValue: string | undefined): RosterModel[] {
+  const requested = modelsValue?.split(",").map((slug) => slug.trim()).filter(Boolean);
+  if (requested && new Set(requested).size !== requested.length) {
+    throw new Error("--models must not contain duplicates");
+  }
+  const count = playerCount(countValue, requested?.length ?? 8);
+  const candidates = requested
+    ? requested.map((slug) => {
+        const entry = findRosterModel(roster, slug);
+        if (!entry) throw new Error(`Model is not in packages/arena/models.json: ${slug}`);
+        return entry;
+      })
+    : roster.models.filter((entry) => entry.enabled);
+  if (candidates.length < count) {
+    throw new Error(`Need ${count} models but only ${candidates.length} were selected`);
+  }
+  return candidates.slice(0, count);
+}
+
+function workerSignal(): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  process.once("SIGINT", abort);
+  process.once("SIGTERM", abort);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+    },
+  };
+}
+
+function compactLiveLog(bus: WorkerEventBus): {
+  costs: Map<string, number>;
+  printCosts(game: Game): void;
+} {
+  const names = new Map<string, string>();
+  const models = new Map<string, string>();
+  const voteOptions = new Map<string, string[]>();
+  const shownPrompts = new Set<string>();
+  const costs = new Map<string, number>();
+  const label = (playerId: string): string => names.get(playerId) ?? playerId;
+
+  bus.on((event: AnyEvent) => {
+    switch (event.type) {
+      case "player.joined":
+        names.set(event.player.id, event.player.name);
+        if (event.player.modelId) models.set(event.player.id, event.player.modelId);
+        console.log(`join  ${event.player.name}${event.player.modelId ? ` (${event.player.modelId})` : ""}`);
+        break;
+      case "prompt.dealt": {
+        const key = `${event.gameId}\0${event.round}\0${event.prompt}`;
+        if (!shownPrompts.has(key)) {
+          shownPrompts.add(key);
+          console.log(`R${event.round} prompt  ${event.prompt}`);
+        }
+        break;
+      }
+      case "answer.submitted":
+        console.log(`  ${label(event.playerId)}: ${Array.isArray(event.answer) ? event.answer.join(" / ") : event.answer}${event.blank ? " [fallback]" : ""}`);
+        break;
+      case "vote.requested":
+        voteOptions.set(`${event.gameId}\0${event.playerId}\0${event.prompt}`, event.options);
+        break;
+      case "vote.cast": {
+        const options = voteOptions.get(`${event.gameId}\0${event.playerId}\0${event.prompt}`);
+        console.log(`  vote ${label(event.playerId)} → ${options?.[event.choice] ?? `#${event.choice + 1}`}`);
+        break;
+      }
+      case "matchup.resolved": {
+        const [left, right] = event.matchup.answers;
+        const leftVotes = event.matchup.votes.filter((vote) => vote.choice === 0)
+          .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
+        const rightVotes = event.matchup.votes.filter((vote) => vote.choice === 1)
+          .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
+        console.log(`  result ${label(left.playerId)} ${leftVotes}–${rightVotes} ${label(right.playerId)}`);
+        break;
+      }
+      case "thriplash.resolved":
+        console.log(`  thriplash resolved (${event.thriplash.votes.length} votes)`);
+        break;
+      case "game.ended":
+        console.log(event.finalScores
+          ? `final ${Object.entries(event.finalScores).sort((a, b) => b[1] - a[1]).map(([id, score]) => `${label(id)}=${score}`).join("  ")}`
+          : "final scores unavailable from controller");
+        break;
+      case "trace.completed": {
+        const model = models.get(event.playerId) ?? event.playerId;
+        costs.set(model, (costs.get(model) ?? 0) + (event.usage?.costUsd ?? 0));
+        break;
+      }
+      case "harness.error":
+        console.error(`error ${event.playerId ? `${label(event.playerId)}: ` : ""}${event.message}`);
+        break;
+      default:
+        break;
+    }
+  });
+
+  return {
+    costs,
+    printCosts: (game) => {
+      console.log("costs");
+      for (const player of game.players) {
+        const model = player.modelId ?? player.name;
+        console.log(`  ${player.name}: $${(costs.get(model) ?? 0).toFixed(6)}`);
+      }
+      console.log(`  total: $${[...costs.values()].reduce((sum, value) => sum + value, 0).toFixed(6)}`);
+    },
+  };
+}
+
+async function closeSinks(bus: WorkerEventBus, sinks: WorkerSink[], db?: ArenaDatabase): Promise<void> {
+  await bus.flush();
+  for (const sink of [...sinks].reverse()) {
+    try {
+      await sink.close?.();
+    } catch (error) {
+      console.error(`Could not close worker sink: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await db?.close();
+}
+
+async function runPlay(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      room: { type: "string" },
+      models: { type: "string" },
+      players: { type: "string" },
+      record: { type: "string" },
+      db: { type: "boolean" },
+      ingest: { type: "string" },
+    },
+    strict: true,
+  });
+  const roomCode = required(values.room, "--room").toUpperCase();
+  if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
+  const roster = workerRoster(await loadRoster(), values.models, values.players);
+  const bus = new WorkerEventBus();
+  const live = compactLiveLog(bus);
+  const sinks: WorkerSink[] = [];
+  let db: ArenaDatabase | undefined;
+  try {
+    if (values.db) {
+      db = await openDb();
+      sinks.push(new DbSink(db));
+    }
+    const ingestUrl = values.ingest ?? process.env["WEB_INGEST_URL"];
+    if (ingestUrl) sinks.push(new IngestSink({ url: ingestUrl }));
+    if (values.record) sinks.push(new JsonlSink(join(values.record, "events.jsonl")));
+    sinks.forEach((sink) => bus.addSink(sink));
+    const signal = workerSignal();
+    try {
+      const game = await runGame({
+        roomCode,
+        roster,
+        bus,
+        signal: signal.signal,
+        ...(values.record === undefined ? {} : {
+          recordDir: values.record,
+          credentialsFile: join(values.record, "credentials.json"),
+        }),
+      });
+      live.printCosts(game);
+    } finally {
+      signal.dispose();
+    }
+  } finally {
+    await closeSinks(bus, sinks, db);
+  }
+}
+
+async function runWorkerLoop(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      room: { type: "string" },
+      "room-file": { type: "string" },
+      db: { type: "boolean" },
+      ingest: { type: "string" },
+    },
+    strict: true,
+  });
+  const roomCode = required(values.room, "--room").toUpperCase();
+  if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
+  const roster = (await loadRoster()).models;
+  const bus = new WorkerEventBus();
+  compactLiveLog(bus);
+  const sinks: WorkerSink[] = [];
+  let db: ArenaDatabase | undefined;
+  try {
+    if (values.db) {
+      db = await openDb();
+    }
+    const ingestUrl = values.ingest ?? process.env["WEB_INGEST_URL"];
+    if (ingestUrl) sinks.push(new IngestSink({ url: ingestUrl }));
+    sinks.forEach((sink) => bus.addSink(sink));
+    const signal = workerSignal();
+    try {
+      await runLoop({
+        roomCode,
+        roster,
+        bus,
+        credentialsFile: DEFAULT_WORKER_CREDENTIALS,
+        signal: signal.signal,
+        ...(values["room-file"] === undefined ? {} : { roomFile: values["room-file"] }),
+        ...(db === undefined ? {} : { db }),
+      });
+    } finally {
+      signal.dispose();
+    }
+  } finally {
+    await closeSinks(bus, sinks, db);
+  }
+}
+
+function scriptedRoster(count: number): RosterModel[] {
+  return Array.from({ length: count }, (_, index) => ({
+    slug: `scripted/player-${index + 1}`,
+    displayName: `Script ${index + 1}`,
+    lab: "Scripted",
+    released: "2026-09-02",
+    reasoning: null,
+    temperature: null,
+    enabled: true,
+    rationale: "Local dry-run player",
+  }));
+}
+
+function scriptedModelPlayer(entry: RosterModel, displayName: string): Player {
+  const scripted = new ScriptedPlayer(displayName);
+  return {
+    name: scripted.name,
+    modelId: entry.slug,
+    answer: (prompt, ctx) => scripted.answer(prompt, ctx),
+    answerFinal: (prompt, ctx) => scripted.answerFinal(prompt, ctx),
+    vote: (prompt, options, ctx) => scripted.vote(prompt, options, ctx),
+  };
+}
+
+async function runDryRun(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: { players: { type: "string" } },
+    strict: true,
+  });
+  const count = playerCount(values.players);
+  const roster = scriptedRoster(count);
+  const bus = new WorkerEventBus();
+  const live = compactLiveLog(bus);
+  const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+  const sink = new DbSink(db);
+  bus.addSink(sink);
+  try {
+    const game = await runGame({
+      roomCode: "FAKE",
+      roster,
+      bus,
+      gameClient: new FakeHarness({ playerCount: count }),
+      playerFactory: scriptedModelPlayer,
+      timeoutMs: 30_000,
+    });
+    const stored = await loadGame(db, game.id);
+    if (!stored?.endedAt || stored.matchups.length !== count * 2 || !stored.thriplash) {
+      throw new Error("Dry-run did not persist a complete game");
+    }
+    const ratings = await computeRatings(db, { bootstrapResamples: 0 });
+    live.printCosts(game);
+    console.log(`dry-run ok: ${stored.players.length} players, ${stored.matchups.length} matchups, ${ratings.populations.player.length} ratings`);
+  } finally {
+    await closeSinks(bus, [sink], db);
+  }
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const [command, ...args] = argv;
   switch (command) {
@@ -283,6 +582,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     case "games":
       await runGames(args);
+      break;
+    case "play":
+      await runPlay(args);
+      break;
+    case "loop":
+      await runWorkerLoop(args);
+      break;
+    case "dry-run":
+      await runDryRun(args);
       break;
     case "help":
     case "--help":
