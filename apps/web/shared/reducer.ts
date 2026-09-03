@@ -120,6 +120,9 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
 
   if (previous.gameId !== event.gameId) return previous;
   let state: LiveState = { ...previous, updatedAt: event.at };
+  if (event.type === "round.started" || event.type === "prompt.dealt" || event.type === "game.started") {
+    state = { ...state, error: null };
+  }
 
   switch (event.type) {
     case "player.joined": {
@@ -296,7 +299,10 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         ),
       };
     case "harness.error":
-      // Per-seat trouble (a model missing its deadline, a watchdog nudge) is not a game failure.
+      // Seat-scoped trouble (a model missing its deadline, a watchdog nudge) is not a game failure
+      // and must not pin a banner to the page; only game-level errors surface, and they clear as
+      // soon as the game demonstrably moves on.
+      if (event.playerId) return state;
       return { ...state, error: event.message };
     case "answer.rejected":
       // The harness re-asks the player; the eventual answer.submitted updates the card.
