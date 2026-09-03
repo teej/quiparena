@@ -58,7 +58,10 @@ export function LeaderboardPage() {
                   </td>
                   <td className="num">{entry.games}</td>
                   <td className="num">{entry.wins}</td>
-                  <td className="num">{entry.matchupWins}–{entry.matchups - entry.matchupWins}<span className="dim"> ({Math.round(entry.matchupWinRate * 100)}%)</span></td>
+                  <td className="num" title="wins–losses–ties">
+                    {entry.matchupWins}–{entry.matchupLosses}{entry.matchupTies > 0 ? `–${entry.matchupTies}` : ""}
+                    <span className="dim"> ({Math.round(entry.matchupWinRate * 100)}%)</span>
+                  </td>
                 </tr>
               );
             })}

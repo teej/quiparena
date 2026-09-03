@@ -107,7 +107,9 @@ export interface LeaderboardEntry {
   games: number;
   wins: number;
   matchupWins: number;
-  matchups: number;
+  matchupLosses: number;
+  matchupTies: number;
+  matchupsPlayed: number;
   matchupWinRate: number;
 }
 

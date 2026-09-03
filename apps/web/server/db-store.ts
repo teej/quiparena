@@ -105,7 +105,6 @@ export class DbStore implements Store {
     const entries = population === "audience" && !audienceVotingAvailable
       ? []
       : rows.map((row): LeaderboardEntry => {
-          const matchupWinRate = row.stats.matchupWinRate ?? 0;
           return {
             modelId: row.modelSlug,
             name: row.displayName,
@@ -115,9 +114,11 @@ export class DbStore implements Store {
             intervalHigh: Math.round(row.upper95),
             games: row.stats.games,
             wins: row.stats.wins,
-            matchupWins: matchupWinRate * row.comparisons,
-            matchups: row.comparisons,
-            matchupWinRate,
+            matchupWins: row.stats.matchupWins,
+            matchupLosses: row.stats.matchupLosses,
+            matchupTies: row.stats.matchupTies,
+            matchupsPlayed: row.stats.matchupsPlayed,
+            matchupWinRate: row.stats.matchupWinRate ?? 0,
           };
         });
     return { population, audienceVotingAvailable, entries };

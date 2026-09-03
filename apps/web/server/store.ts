@@ -130,7 +130,9 @@ interface MutableRating {
   games: number;
   wins: number;
   matchupWins: number;
-  matchups: number;
+  matchupLosses: number;
+  matchupTies: number;
+  matchupsPlayed: number;
 }
 
 function selectedVotes(matchup: Matchup, population: LeaderboardPopulation): Vote[] {
@@ -155,7 +157,16 @@ function calculateLeaderboard(
   const ratings = new Map<string, MutableRating>();
   for (const player of allPlayers) {
     if (!player.modelId || ratings.has(player.modelId)) continue;
-    ratings.set(player.modelId, { player, rating: 1500, games: 0, wins: 0, matchupWins: 0, matchups: 0 });
+    ratings.set(player.modelId, {
+      player,
+      rating: 1500,
+      games: 0,
+      wins: 0,
+      matchupWins: 0,
+      matchupLosses: 0,
+      matchupTies: 0,
+      matchupsPlayed: 0,
+    });
   }
 
   for (const game of games) {
@@ -187,16 +198,24 @@ function calculateLeaderboard(
       const delta = 28 * (actualLeft - expectedLeft);
       left.rating += delta;
       right.rating -= delta;
-      left.matchups += 1;
-      right.matchups += 1;
-      if (leftVotes > rightVotes) left.matchupWins += 1;
-      if (rightVotes > leftVotes) right.matchupWins += 1;
+      left.matchupsPlayed += 1;
+      right.matchupsPlayed += 1;
+      if (leftVotes > rightVotes) {
+        left.matchupWins += 1;
+        right.matchupLosses += 1;
+      } else if (rightVotes > leftVotes) {
+        right.matchupWins += 1;
+        left.matchupLosses += 1;
+      } else {
+        left.matchupTies += 1;
+        right.matchupTies += 1;
+      }
     }
   }
 
   return [...ratings.values()]
     .map((entry): LeaderboardEntry => {
-      const margin = 196 / Math.sqrt(Math.max(1, entry.matchups));
+      const margin = 196 / Math.sqrt(Math.max(1, entry.matchupsPlayed));
       return {
         modelId: entry.player.modelId ?? entry.player.id,
         name: entry.player.name,
@@ -207,8 +226,10 @@ function calculateLeaderboard(
         games: entry.games,
         wins: entry.wins,
         matchupWins: entry.matchupWins,
-        matchups: entry.matchups,
-        matchupWinRate: entry.matchups === 0 ? 0 : entry.matchupWins / entry.matchups,
+        matchupLosses: entry.matchupLosses,
+        matchupTies: entry.matchupTies,
+        matchupsPlayed: entry.matchupsPlayed,
+        matchupWinRate: entry.matchupsPlayed === 0 ? 0 : entry.matchupWins / entry.matchupsPlayed,
       };
     })
     .sort((left, right) => right.rating - left.rating || left.name.localeCompare(right.name));

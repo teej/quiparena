@@ -33,6 +33,10 @@ export interface ModelStats {
   games: number;
   wins: number;
   avgPlacement: number | null;
+  matchupWins: number;
+  matchupLosses: number;
+  matchupTies: number;
+  matchupsPlayed: number;
   matchupWinRate: number | null;
   avgPoints: number | null;
 }
@@ -230,6 +234,10 @@ export function fitBradleyTerry(
     games: 0,
     wins: 0,
     avgPlacement: null,
+    matchupWins: 0,
+    matchupLosses: 0,
+    matchupTies: 0,
+    matchupsPlayed: 0,
     matchupWinRate: null,
     avgPoints: null,
   };
@@ -252,6 +260,12 @@ interface RatingData {
   modelSlugs: string[];
   comparisons: Comparison[];
   stats: Map<string, ModelStats>;
+  matchups: RatedMatchup[];
+}
+
+interface RatedMatchup {
+  modelSlugs: [string, string];
+  votes: Array<Pick<Comparison, "population" | "weight"> & { modelSlug: string }>;
 }
 
 async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
@@ -317,19 +331,29 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
   // remain valid even when the containing game is later abandoned; game-level
   // appearances, standings, wins, and points above count completed games only.
   const comparisons: Comparison[] = [];
-  const matchupWins = new Map<string, number>();
-  const matchupTotals = new Map<string, number>();
+  const ratedMatchups: RatedMatchup[] = [];
+  const votesByMatchup = new Map<string, typeof voteRows>();
   for (const vote of voteRows) {
     if (!vote.matchupId) continue;
-    const matchupAnswers = answerByMatchup.get(vote.matchupId);
-    if (!matchupAnswers || matchupAnswers.size !== 2) continue;
-    const winner = matchupAnswers.get(vote.choice);
-    const loser = [...matchupAnswers.entries()].find(([index]) => index !== vote.choice)?.[1];
-    if (!winner || !loser || winner === loser || vote.weight <= 0) continue;
-    comparisons.push({ winner, loser, population: vote.population, weight: vote.weight });
-    matchupWins.set(winner, (matchupWins.get(winner) ?? 0) + vote.weight);
-    matchupTotals.set(winner, (matchupTotals.get(winner) ?? 0) + vote.weight);
-    matchupTotals.set(loser, (matchupTotals.get(loser) ?? 0) + vote.weight);
+    const rows = votesByMatchup.get(vote.matchupId) ?? [];
+    rows.push(vote);
+    votesByMatchup.set(vote.matchupId, rows);
+  }
+  for (const [matchupId, matchupAnswers] of answerByMatchup) {
+    if (matchupAnswers.size !== 2) continue;
+    const answerEntries = [...matchupAnswers.entries()].sort(([left], [right]) => left - right);
+    const left = answerEntries[0]?.[1];
+    const right = answerEntries[1]?.[1];
+    if (!left || !right || left === right) continue;
+    const matchupVotes: RatedMatchup["votes"] = [];
+    for (const vote of votesByMatchup.get(matchupId) ?? []) {
+      const winner = matchupAnswers.get(vote.choice);
+      const loser = answerEntries.find(([index]) => index !== vote.choice)?.[1];
+      if (!winner || !loser || !Number.isFinite(vote.weight) || vote.weight <= 0) continue;
+      comparisons.push({ winner, loser, population: vote.population, weight: vote.weight });
+      matchupVotes.push({ modelSlug: winner, population: vote.population, weight: vote.weight });
+    }
+    ratedMatchups.push({ modelSlugs: [left, right], votes: matchupVotes });
   }
 
   const modelSlugs = [...new Set([
@@ -343,12 +367,57 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
     games: gameSets.get(slug)?.size ?? 0,
     wins: wins.get(slug) ?? 0,
     avgPlacement: average(placements.get(slug)),
-    matchupWinRate: matchupTotals.has(slug)
-      ? (matchupWins.get(slug) ?? 0) / matchupTotals.get(slug)!
-      : null,
+    matchupWins: 0,
+    matchupLosses: 0,
+    matchupTies: 0,
+    matchupsPlayed: 0,
+    matchupWinRate: null,
     avgPoints: average(points.get(slug)),
   }]));
-  return { modelSlugs, comparisons, stats };
+  return { modelSlugs, comparisons, stats, matchups: ratedMatchups };
+}
+
+function statsForPopulation(
+  data: RatingData,
+  population: RatingPopulation,
+  blendedWeights: { player: number; audience: number },
+): Map<string, ModelStats> {
+  const stats = new Map([...data.stats].map(([slug, value]) => [slug, { ...value }]));
+  for (const matchup of data.matchups) {
+    const [leftSlug, rightSlug] = matchup.modelSlugs;
+    let leftVotes = 0;
+    let rightVotes = 0;
+    for (const vote of matchup.votes) {
+      if (population !== "blended" && vote.population !== population) continue;
+      const populationWeight = population === "blended" ? blendedWeights[vote.population] : 1;
+      const weight = vote.weight * populationWeight;
+      if (!(weight > 0)) continue;
+      if (vote.modelSlug === leftSlug) leftVotes += weight;
+      else if (vote.modelSlug === rightSlug) rightVotes += weight;
+    }
+    if (leftVotes + rightVotes <= 0) continue;
+
+    const left = stats.get(leftSlug)!;
+    const right = stats.get(rightSlug)!;
+    left.matchupsPlayed += 1;
+    right.matchupsPlayed += 1;
+    if (leftVotes > rightVotes) {
+      left.matchupWins += 1;
+      right.matchupLosses += 1;
+    } else if (rightVotes > leftVotes) {
+      right.matchupWins += 1;
+      left.matchupLosses += 1;
+    } else {
+      left.matchupTies += 1;
+      right.matchupTies += 1;
+    }
+  }
+  for (const value of stats.values()) {
+    value.matchupWinRate = value.matchupsPlayed > 0
+      ? value.matchupWins / value.matchupsPlayed
+      : null;
+  }
+  return stats;
 }
 
 /** Read all comparisons, compute all three populations, and snapshot the results. */
@@ -359,6 +428,7 @@ export async function computeRatings(
   await abandonStaleGames(db, { ...(options.now === undefined ? {} : { now: options.now }) });
   await backfillCompletedGameScores(db);
   const data = await readRatingData(db);
+  const validated = validatedOptions(options);
   const computedAt = options.now ?? new Date();
   if (!Number.isFinite(computedAt.getTime())) throw new Error("Invalid ratings timestamp");
   const populations = Object.fromEntries(
@@ -367,7 +437,7 @@ export async function computeRatings(
       fitBradleyTerry(data.comparisons, data.modelSlugs, {
         ...options,
         population,
-        stats: data.stats,
+        stats: statsForPopulation(data, population, validated.blendedWeights),
       }),
     ]),
   ) as Record<RatingPopulation, RatingEntry[]>;
@@ -406,12 +476,35 @@ export async function leaderboard(
     readRatingData(db),
     db.select().from(models),
   ]);
+  const fallbackStats = statsForPopulation(data, population, { player: 1, audience: 1 });
   const modelBySlug = new Map(modelRows.map((model) => [model.slug, model]));
   return snapshot.results.filter(isRatingEntry).map((entry) => {
     const model = modelBySlug.get(entry.modelSlug);
+    const current = data.stats.get(entry.modelSlug);
+    const fallback = fallbackStats.get(entry.modelSlug);
+    const stored = entry.stats;
+    const hasStoredMatchupStats = Number.isInteger(stored?.matchupWins)
+      && Number.isInteger(stored?.matchupLosses)
+      && Number.isInteger(stored?.matchupTies)
+      && Number.isInteger(stored?.matchupsPlayed);
+    const matchupStats = hasStoredMatchupStats ? stored : fallback;
+    const matchupWins = matchupStats?.matchupWins ?? 0;
+    const matchupLosses = matchupStats?.matchupLosses ?? 0;
+    const matchupTies = matchupStats?.matchupTies ?? 0;
+    const matchupsPlayed = matchupStats?.matchupsPlayed ?? 0;
     return {
       ...entry,
-      stats: data.stats.get(entry.modelSlug) ?? entry.stats,
+      stats: {
+        games: current?.games ?? stored?.games ?? 0,
+        wins: current?.wins ?? stored?.wins ?? 0,
+        avgPlacement: current?.avgPlacement ?? stored?.avgPlacement ?? null,
+        matchupWins,
+        matchupLosses,
+        matchupTies,
+        matchupsPlayed,
+        matchupWinRate: matchupsPlayed > 0 ? matchupWins / matchupsPlayed : null,
+        avgPoints: current?.avgPoints ?? stored?.avgPoints ?? null,
+      },
       displayName: model?.displayName ?? entry.modelSlug.split("/").at(-1) ?? entry.modelSlug,
       lab: model?.lab ?? entry.modelSlug.split("/", 1)[0] ?? "unknown",
       enabled: model?.enabled ?? false,

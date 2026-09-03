@@ -201,6 +201,106 @@ describe("Bradley-Terry ratings", () => {
     }
   });
 
+  it("counts one integer outcome per matchup and keeps player and inferred audience votes isolated", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    try {
+      await db.insert(models).values([
+        { slug: "lab/a", displayName: "A", lab: "lab", enabled: true, config: {} },
+        { slug: "lab/b", displayName: "B", lab: "lab", enabled: true, config: {} },
+      ]);
+      await db.insert(games).values({
+        id: "population-outcomes",
+        roomCode: "POPS",
+        startedAt: new Date("2026-09-02T12:00:00Z"),
+        status: "completed",
+      });
+      await db.insert(gamePlayers).values([
+        { gameId: "population-outcomes", playerId: "a", name: "A", modelSlug: "lab/a", seat: 0 },
+        { gameId: "population-outcomes", playerId: "b", name: "B", modelSlug: "lab/b", seat: 1 },
+      ]);
+      await db.insert(matchups).values([0, 1, 2].map((index) => ({
+        id: `population-match-${index}`,
+        gameId: "population-outcomes",
+        round: 1 as const,
+        index,
+        prompt: `Population matchup ${index}`,
+      })));
+      await db.insert(answers).values([0, 1, 2].flatMap((index) => ([
+        {
+          id: `population-answer-${index}-a`, gameId: "population-outcomes",
+          matchupId: `population-match-${index}`, playerId: "a", answerIndex: 0, text: "A",
+        },
+        {
+          id: `population-answer-${index}-b`, gameId: "population-outcomes",
+          matchupId: `population-match-${index}`, playerId: "b", answerIndex: 1, text: "B",
+        },
+      ])));
+      await db.insert(votes).values([
+        // Player A wins, while an inferred audience weight of 2 picks B.
+        { id: "m0-player-a", gameId: "population-outcomes", matchupId: "population-match-0", voterId: "p1", population: "player", source: "model", choice: 0, weight: 1 },
+        { id: "m0-audience-b", gameId: "population-outcomes", matchupId: "population-match-0", population: "audience", source: "game", choice: 1, weight: 2, inferred: true },
+        // Players pick B twice, while an inferred audience weight of 1 picks A.
+        { id: "m1-player-b-1", gameId: "population-outcomes", matchupId: "population-match-1", voterId: "p1", population: "player", source: "model", choice: 1, weight: 1 },
+        { id: "m1-player-b-2", gameId: "population-outcomes", matchupId: "population-match-1", voterId: "p2", population: "player", source: "model", choice: 1, weight: 1 },
+        { id: "m1-audience-a", gameId: "population-outcomes", matchupId: "population-match-1", population: "audience", source: "game", choice: 0, weight: 1, inferred: true },
+        // The players tie; the inferred audience weight of 2 breaks the blended result for A.
+        { id: "m2-player-a", gameId: "population-outcomes", matchupId: "population-match-2", voterId: "p1", population: "player", source: "model", choice: 0, weight: 1 },
+        { id: "m2-player-b", gameId: "population-outcomes", matchupId: "population-match-2", voterId: "p2", population: "player", source: "model", choice: 1, weight: 1 },
+        { id: "m2-audience-a", gameId: "population-outcomes", matchupId: "population-match-2", population: "audience", source: "game", choice: 0, weight: 2, inferred: true },
+      ]);
+
+      const run = await computeRatings(db, {
+        bootstrapResamples: 0,
+        blendedWeights: { player: 3, audience: 1 },
+        now: new Date("2026-09-02T13:00:00Z"),
+      });
+      const stats = (population: "player" | "audience" | "blended", slug: string) => (
+        run.populations[population].find((entry) => entry.modelSlug === slug)!.stats
+      );
+
+      expect(stats("player", "lab/a")).toMatchObject({
+        matchupWins: 1, matchupLosses: 1, matchupTies: 1, matchupsPlayed: 3,
+        matchupWinRate: 1 / 3,
+      });
+      expect(stats("audience", "lab/a")).toMatchObject({
+        matchupWins: 2, matchupLosses: 1, matchupTies: 0, matchupsPlayed: 3,
+        matchupWinRate: 2 / 3,
+      });
+      expect(stats("blended", "lab/a")).toMatchObject({
+        matchupWins: 2, matchupLosses: 1, matchupTies: 0, matchupsPlayed: 3,
+        matchupWinRate: 2 / 3,
+      });
+      expect(stats("player", "lab/b")).toMatchObject({
+        matchupWins: 1, matchupLosses: 1, matchupTies: 1, matchupsPlayed: 3,
+      });
+      expect(stats("audience", "lab/b")).toMatchObject({
+        matchupWins: 1, matchupLosses: 2, matchupTies: 0, matchupsPlayed: 3,
+      });
+      expect(stats("blended", "lab/b")).toMatchObject({
+        matchupWins: 1, matchupLosses: 2, matchupTies: 0, matchupsPlayed: 3,
+      });
+
+      for (const population of ["player", "audience", "blended"] as const) {
+        for (const entry of run.populations[population]) {
+          expect([
+            entry.stats.matchupWins,
+            entry.stats.matchupLosses,
+            entry.stats.matchupTies,
+            entry.stats.matchupsPlayed,
+          ].every(Number.isInteger)).toBe(true);
+          expect(entry.stats.matchupsPlayed).toBe(
+            entry.stats.matchupWins + entry.stats.matchupLosses + entry.stats.matchupTies,
+          );
+        }
+      }
+
+      expect((await leaderboard(db, "player")).find((entry) => entry.modelSlug === "lab/a")?.stats)
+        .toMatchObject({ matchupWins: 1, matchupLosses: 1, matchupTies: 1, matchupsPlayed: 3 });
+    } finally {
+      await db.close();
+    }
+  });
+
   it("uses observed placements for stats and produces audience ratings from aggregate game votes", async () => {
     const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
     try {

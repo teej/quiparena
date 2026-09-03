@@ -113,7 +113,13 @@ describe("DbStore web integration", () => {
     expect(new Set(board.entries.map((entry) => entry.modelId))).toEqual(
       new Set(fixture.archive.game.players.map((player) => player.modelId)),
     );
-    expect(board.entries.every((entry) => entry.games === 1 && entry.matchups > 0)).toBe(true);
+    expect(board.entries.every((entry) => entry.games === 1 && entry.matchupsPlayed > 0)).toBe(true);
+    expect(board.entries.every((entry) => (
+      Number.isInteger(entry.matchupWins)
+      && Number.isInteger(entry.matchupLosses)
+      && Number.isInteger(entry.matchupTies)
+      && entry.matchupsPlayed === entry.matchupWins + entry.matchupLosses + entry.matchupTies
+    ))).toBe(true);
 
     const unauthorized = await fetch(`${baseUrl}/api/admin/ratings/recompute`, { method: "POST" });
     expect(unauthorized.status).toBe(401);
