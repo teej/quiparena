@@ -6,40 +6,70 @@ import type { AnswerTrace, ArchivedGame } from "../../../shared/types.js";
 import { formatDate, formatScore } from "../api.js";
 import { useApi } from "../hooks/useApi.js";
 
+const LETTERS = ["A", "B"] as const;
+
 function Trace({ trace }: { trace: AnswerTrace | undefined }) {
+  if (!trace?.reasoning) return <p className="trace trace--none">no reasoning kept</p>;
   return (
-    <details className="archive-trace">
-      <summary>Reasoning trace</summary>
-      <pre>{trace?.reasoning || "This trace was not retained."}</pre>
+    <details className="trace">
+      <summary>reasoning</summary>
+      <pre>{trace.reasoning}</pre>
     </details>
   );
 }
 
-function MatchupReplay({ matchup, data }: { matchup: Matchup; data: ArchivedGame }) {
-  return (
-    <article className="replay-matchup">
-      <header><span className="matchup-number">{String(matchup.index + 1).padStart(2, "0")}</span><h3>{matchup.prompt}</h3></header>
-      <div className="replay-answers">
-        {matchup.answers.map((answer, choice) => {
-          const author = data.game.players.find((player) => player.id === answer.playerId);
-          const trace = data.traces[answer.playerId]?.find((item) => item.prompt === matchup.prompt);
-          const votes = matchup.votes.filter((vote) => vote.choice === choice && vote.population === "player")
-            .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
-          return (
-            <section key={answer.playerId}>
-              <div className="answer-meta"><span>{String.fromCharCode(65 + choice)}</span><strong>{author?.name ?? answer.playerId}</strong><small>{votes} votes</small></div>
-              <blockquote>{answer.blank ? "No answer" : answer.text}</blockquote>
-              <Trace trace={trace} />
-            </section>
-          );
-        })}
+/** An answer card whose whole face toggles the reasoning underneath it. */
+function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
+  letter: string; text: string; author: string; voters: string[]; tally: number; leader: boolean; trace: AnswerTrace | undefined;
+}) {
+  const hasTrace = Boolean(trace?.reasoning);
+  const face = (
+    <>
+      <span className="option__letter">{letter}</span>
+      <div className="option__body">
+        <p className="option__text">{text}</p>
+        <p className="option__meta">
+          <span className="option__author">{author}</span>
+          <span className="option__votes">{voters.length ? voters.join(", ") : "—"}</span>
+        </p>
       </div>
-      <footer>
-        {matchup.votes.filter((vote) => vote.population === "player").map((vote) => {
-          const voter = data.game.players.find((player) => player.id === vote.voterId);
-          return <span key={`${vote.voterId}-${vote.choice}`}>{voter?.name ?? vote.voterId} → {String.fromCharCode(65 + vote.choice)}</span>;
-        })}
-      </footer>
+      <span className="option__tally" data-trace={hasTrace}>{tally}</span>
+    </>
+  );
+  if (!hasTrace) return <section className="option option--replay" data-leader={leader}>{face}</section>;
+  return (
+    <details className="option option--replay" data-leader={leader}>
+      <summary>{face}</summary>
+      <pre className="option__trace">{trace?.reasoning}</pre>
+    </details>
+  );
+}
+
+function MatchupReplay({ matchup, data, number }: { matchup: Matchup; data: ArchivedGame; number: number }) {
+  const nameOf = (id: string): string => data.game.players.find((player) => player.id === id)?.name ?? id;
+  const playerVotes = matchup.votes.filter((vote) => vote.population === "player");
+  const tallies = [0, 1].map((choice) => playerVotes.filter((vote) => vote.choice === choice).reduce((sum, vote) => sum + (vote.weight ?? 1), 0));
+  const leader = tallies[0] === tallies[1] ? null : tallies[0]! > tallies[1]! ? 0 : 1;
+  return (
+    <article className="replay">
+      <header className="replay__head">
+        <span className="replay__number">{String(number).padStart(2, "0")}</span>
+        <h3 className="replay__prompt">{matchup.prompt}</h3>
+      </header>
+      <div className="replay__answers">
+        {matchup.answers.map((answer, choice) => (
+          <AnswerCard
+            key={answer.playerId}
+            letter={LETTERS[choice] ?? "?"}
+            text={answer.blank ? "no answer" : answer.text}
+            author={nameOf(answer.playerId)}
+            voters={playerVotes.filter((vote) => vote.choice === choice).map((vote) => nameOf(vote.voterId))}
+            tally={tallies[choice] ?? 0}
+            leader={leader === choice}
+            trace={data.traces[answer.playerId]?.find((item) => item.prompt === matchup.prompt)}
+          />
+        ))}
+      </div>
     </article>
   );
 }
@@ -47,46 +77,48 @@ function MatchupReplay({ matchup, data }: { matchup: Matchup; data: ArchivedGame
 export function GamePage() {
   const { id = "" } = useParams();
   const { data, loading, error } = useApi<ArchivedGame>(`/api/games/${encodeURIComponent(id)}`);
-  if (loading) return <div className="loading-panel">Rebuilding game tape…</div>;
-  if (error || !data) return <div className="error-banner">{error ?? "Game not found"}</div>;
+  if (loading) return <div className="page"><p className="note">loading</p></div>;
+  if (error || !data) return <div className="page"><p className="note note--error">{error ?? "No such game."}</p></div>;
 
   const replay = replayEvents(data.events);
-  const replayedGame = liveStateToGame(replay) ?? data.game;
-  const rounds = [1, 2] as const;
-  const scores = Object.entries(replayedGame.finalScores ?? {}).sort((left, right) => right[1] - left[1]);
+  const game = liveStateToGame(replay) ?? data.game;
+  const nameOf = (playerId: string): string => data.game.players.find((player) => player.id === playerId)?.name ?? playerId;
+  const scores = Object.entries(game.finalScores ?? {}).sort((left, right) => right[1] - left[1]);
+  let number = 0;
+
   return (
-    <div className="page-stack replay-page">
-      <Link className="back-link" to="/games">← All games</Link>
-      <header className="replay-hero">
-        <div><span className="eyebrow">Room {replayedGame.roomCode}</span><h1>Game replay</h1><p>{formatDate(replayedGame.startedAt)}</p></div>
-        <div className="winner-card">
-          <span className="eyebrow">Final leader</span>
-          <strong>{data.game.players.find((player) => player.id === scores[0]?.[0])?.name ?? "In progress"}</strong>
-          <span>{scores[0] ? formatScore(scores[0][1]) : "—"} pts</span>
-        </div>
+    <div className="page page--replay">
+      <header className="page__head">
+        <Link className="back" to="/games">← games</Link>
+        <h1>Room {game.roomCode}</h1>
+        <p>{formatDate(game.startedAt)}</p>
       </header>
 
-      {rounds.map((round) => (
-        <section className="round-section" key={round}>
-          <div className="round-heading"><span>Round {round}</span><small>{round === 2 ? "Double points" : "Head to head"}</small></div>
-          {replay.matchups.filter((matchup) => matchup.round === round).map((matchup) => (
-            <MatchupReplay matchup={matchup} data={data} key={matchup.id} />
-          ))}
+      {([1, 2] as const).map((round) => (
+        <section className="round" key={round}>
+          <h2 className="rule-label"><span>round {round}{round === 2 ? "  /  double points" : ""}</span></h2>
+          {replay.matchups.filter((matchup) => matchup.round === round).map((matchup) => {
+            number += 1;
+            return <MatchupReplay matchup={matchup} data={data} number={number} key={matchup.id} />;
+          })}
         </section>
       ))}
 
       {replay.thriplash && (
-        <section className="round-section">
-          <div className="round-heading"><span>Thriplash</span><small>Three answers each</small></div>
-          <article className="thriplash-replay">
-            <h2>{replay.thriplash.prompt}</h2>
-            <div>
+        <section className="round">
+          <h2 className="rule-label"><span>thriplash</span></h2>
+          <article className="replay">
+            <header className="replay__head">
+              <span className="replay__number">{String(number + 1).padStart(2, "0")}</span>
+              <h3 className="replay__prompt">{replay.thriplash.prompt}</h3>
+            </header>
+            <div className="thriplash">
               {replay.thriplash.entries.map((entry) => {
-                const player = data.game.players.find((item) => item.id === entry.playerId);
                 const trace = data.traces[entry.playerId]?.find((item) => item.prompt === replay.thriplash?.prompt);
+                const votes = replay.thriplash?.votes.filter((vote) => vote.population === "player" && replay.thriplash?.entries[vote.choice]?.playerId === entry.playerId).length ?? 0;
                 return (
-                  <section key={entry.playerId}>
-                    <strong>{player?.name ?? entry.playerId}</strong>
+                  <section className="thriplash__entry" key={entry.playerId}>
+                    <p className="option__meta"><span className="option__author">{nameOf(entry.playerId)}</span><span className="option__votes">{votes} {votes === 1 ? "vote" : "votes"}</span></p>
                     <ol>{entry.lines.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}</ol>
                     <Trace trace={trace} />
                   </section>
@@ -98,9 +130,18 @@ export function GamePage() {
       )}
 
       {scores.length > 0 && (
-        <section className="final-table">
-          <div className="round-heading"><span>Final scores</span><small>Room {replayedGame.roomCode}</small></div>
-          <ol>{scores.map(([playerId, score], index) => <li key={playerId}><span>{index + 1}</span><strong>{data.game.players.find((player) => player.id === playerId)?.name ?? playerId}</strong><em>{formatScore(score)}</em></li>)}</ol>
+        <section className="standings">
+          <h2 className="rule-label"><span>final</span></h2>
+          <ol className="standings__list">
+            {scores.map(([playerId, score], index) => (
+              <li key={playerId} data-seat={index < 2 ? "kept" : "rotates"}>
+                <span className="standings__rank">{index + 1}</span>
+                <span className="standings__name">{nameOf(playerId)}</span>
+                <span className="standings__note">{index < 2 ? "keeps the seat" : ""}</span>
+                <span className="standings__score">{formatScore(score)}</span>
+              </li>
+            ))}
+          </ol>
         </section>
       )}
     </div>

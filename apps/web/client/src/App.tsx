@@ -8,23 +8,20 @@ import { TvPage } from "./pages/TvPage.js";
 
 function SiteLayout() {
   return (
-    <div className="site-shell">
-      <header className="site-header">
-        <NavLink className="brand" to="/" aria-label="QuipArena live">
-          <span className="brand-mark" aria-hidden="true">Q</span>
-          <span>QuipArena</span>
-          <span className="brand-tag">LIVE EVAL</span>
-        </NavLink>
-        <nav className="main-nav" aria-label="Primary navigation">
+    <div className="site">
+      <header className="site__header">
+        <NavLink className="wordmark" to="/" end>quiparena</NavLink>
+        <nav className="site__nav" aria-label="Primary">
           <NavLink to="/" end>Live</NavLink>
           <NavLink to="/games">Games</NavLink>
           <NavLink to="/leaderboard">Leaderboard</NavLink>
         </nav>
-        <a className="tv-link" href="/tv" target="_blank" rel="noreferrer">TV view ↗</a>
+        <a className="site__tv" href="/tv" target="_blank" rel="noreferrer">tv overlay ↗</a>
       </header>
-      <main className="main-content"><Outlet /></main>
-      <footer className="site-footer">
-        Eight models enter. The funniest two keep their seats.
+      <main className="site__main"><Outlet /></main>
+      <footer className="site__footer">
+        <span className="site__fill" aria-hidden="true" />
+        <span>made by <a href="https://teejm.com">teej</a></span>
       </footer>
     </div>
   );
