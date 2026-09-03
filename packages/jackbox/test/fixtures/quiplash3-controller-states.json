@@ -1,0 +1,56 @@
+{
+  "roomLobby": {
+    "state": "Lobby",
+    "characters": [
+      { "name": "Purple", "available": false },
+      { "name": "Yellow", "available": true }
+    ],
+    "gameCanStart": true,
+    "gameIsStarting": false,
+    "gameFinished": false
+  },
+  "vipLobby": {
+    "state": "Lobby",
+    "playerInfo": { "avatar": "Purple", "username": "REC1" },
+    "playerIsVIP": true,
+    "playerCanStartGame": true
+  },
+  "singleText": {
+    "state": "EnterSingleText",
+    "round": 1,
+    "entryId": "answer-1",
+    "prompt": { "html": "<div class='header'>Prompt 1 of 2</div><div>The worst mascot</div>" },
+    "textKey": "entertext:4",
+    "maxLength": 45,
+    "entry": "",
+    "doneText": { "html": "<strong>Answer received</strong>" }
+  },
+  "singleChoice": {
+    "state": "MakeSingleChoice",
+    "round": 2,
+    "choiceId": "vote-1",
+    "prompt": { "text": "Pick the funniest" },
+    "choices": [
+      { "index": 41, "text": "First choice" },
+      { "key": "runtime-right", "html": "Second &amp; better" }
+    ],
+    "chosen": "",
+    "doneText": { "text": "Thanks for voting" }
+  },
+  "thriplash": {
+    "state": "EnterTextList",
+    "round": 3,
+    "entryId": "final-1",
+    "prompt": { "text": "Three signs the moon is haunted" },
+    "textKey": "entertext:4",
+    "fieldCount": 3,
+    "maxLength": 45,
+    "entries": null,
+    "doneText": { "text": "Three answers received" }
+  },
+  "ugc": {
+    "state": "UGC",
+    "validActions": ["add", "done"],
+    "text": { "html": "<b>Episode editor</b>" }
+  }
+}

@@ -90,13 +90,17 @@ describe("EcastConnection", () => {
     expect(JSON.parse(records[1].data)).toMatchObject({ opcode: "text/update" });
   });
 
-  it("reconnects with the saved id, secret, device-id, and original user-id", async () => {
+  it("reconnects immediately with same-page id, secret, device-id, and user-id", async () => {
     const [welcomeFrame] = await lobbyFrames();
     const urls: string[] = [];
     let visits = 0;
     const { server, baseUrl } = await mockServer((socket, request) => {
       urls.push(request.url ?? "");
       visits += 1;
+      if (visits === 2) {
+        socket.terminate();
+        return;
+      }
       const frame = structuredClone(welcomeFrame!);
       const result = frame.result as Record<string, unknown>;
       result.reconnect = visits > 1;
@@ -105,19 +109,49 @@ describe("EcastConnection", () => {
     });
     servers.push(server);
     const connection = makeConnection(baseUrl, {
-      reconnect: { baseDelayMs: 5, maxDelayMs: 5, jitterMs: 0, maxAttempts: 2 },
+      reconnect: { baseDelayMs: 5, maxDelayMs: 5, jitterMs: 0, maxAttempts: 3 },
     });
     connections.push(connection);
     const welcomes: number[] = [];
+    const reconnectDelays: number[] = [];
     connection.on("welcome", () => welcomes.push(Date.now()));
+    connection.on("reconnecting", (_attempt, delayMs) => reconnectDelays.push(delayMs));
     await connection.connect();
     await waitFor(() => welcomes.length === 2);
 
-    const reconnectUrl = new URL(urls[1]!, baseUrl);
+    const reconnectUrl = new URL(urls[2]!, baseUrl);
     expect(reconnectUrl.searchParams.get("id")).toBe("4");
     expect(reconnectUrl.searchParams.get("secret")).toBe("31b4e369-00b9-484b-b6bc-9891d16e4f10");
     expect(reconnectUrl.searchParams.get("device-id")).toBe("04320cb4ac.b5f85b09f8161f347abb5e");
     expect(reconnectUrl.searchParams.get("user-id")).toBe(connection.userId);
+    expect(reconnectDelays).toEqual([0, 5]);
+  });
+
+  it("omits a legacy device-id from page-reload reconnect parameters", async () => {
+    const [welcomeFrame] = await lobbyFrames();
+    let requestUrl = "";
+    const { server, baseUrl } = await mockServer((socket, request) => {
+      requestUrl = request.url ?? "";
+      socket.send(JSON.stringify(welcomeFrame));
+    });
+    servers.push(server);
+    const connection = makeConnection(baseUrl, {
+      credentials: {
+        room: "BEXH",
+        name: "REC1",
+        userId: "c5fff645-b1ad-4be7-8c00-68b1bef40094",
+        id: 4,
+        secret: "reload-secret",
+        deviceId: "legacy-device-id",
+      },
+    });
+    connections.push(connection);
+    await connection.connect();
+
+    const url = new URL(requestUrl, baseUrl);
+    expect(url.searchParams.get("id")).toBe("4");
+    expect(url.searchParams.get("secret")).toBe("reload-secret");
+    expect(url.searchParams.has("device-id")).toBe(false);
   });
 });
 

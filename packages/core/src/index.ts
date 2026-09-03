@@ -77,6 +77,13 @@ export interface Game {
   finalScores?: Record<string, number>;
 }
 
+/** Raw controller display values retained alongside the harness's plain-text projection. */
+export interface HarnessControllerRaw {
+  prompt?: unknown;
+  choices?: unknown;
+  doneText?: unknown;
+}
+
 /**
  * Events emitted by the harness/arena. Persistent events form the game record;
  * ephemeral events stream to the website but are not stored individually.
@@ -86,10 +93,10 @@ export type GameEvent =
   | { type: "player.joined"; gameId: string; player: PlayerRef; at: string }
   | { type: "game.started"; gameId: string; at: string }
   | { type: "round.started"; gameId: string; round: RoundNumber; at: string }
-  | { type: "prompt.dealt"; gameId: string; round: RoundNumber; playerId: string; prompt: string; deadlineMs: number; at: string }
-  | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; at: string }
-  | { type: "vote.requested"; gameId: string; round: RoundNumber; playerId: string; prompt: string; options: string[]; deadlineMs: number; at: string }
-  | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; at: string }
+  | { type: "prompt.dealt"; gameId: string; round: RoundNumber; playerId: string; prompt: string; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
+  | { type: "answer.submitted"; gameId: string; round: RoundNumber; playerId: string; prompt: string; answer: string | [string, string, string]; blank: boolean; latencyMs: number; controller?: HarnessControllerRaw; at: string }
+  | { type: "vote.requested"; gameId: string; round: RoundNumber; playerId: string; prompt: string; options: string[]; deadlineMs: number; controller?: HarnessControllerRaw; at: string }
+  | { type: "vote.cast"; gameId: string; round: RoundNumber; playerId: string; prompt: string; choice: number; choiceKey?: string | number; answer?: string; controller?: HarnessControllerRaw; at: string }
   | { type: "matchup.resolved"; gameId: string; matchup: Matchup; at: string }
   | { type: "thriplash.resolved"; gameId: string; thriplash: Thriplash; at: string }
   | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; at: string }

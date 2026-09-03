@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import type { AnyEvent } from "@quiparena/core";
 
+import { GameAggregator } from "./aggregator.js";
 import { loadCredentials, saveCredentials, type SeatCredentials } from "./credentials.js";
 import { EcastConnection } from "./ecast.js";
 import { Quiplash3Seat } from "./quiplash3.js";
@@ -62,6 +63,11 @@ async function playCommand(args: string[]): Promise<void> {
   if (room.full) throw new Error(`Room ${room.code} is full`);
 
   const gameId = `${room.code}-${Date.now()}`;
+  const aggregator = new GameAggregator({ gameId, expectedPlayerCount: playerCount, onEvent: printEvent });
+  const onSeatEvent = (event: AnyEvent): void => {
+    if (event.type !== "game.ended") printEvent(event);
+    aggregator.ingest(event);
+  };
   const seats: Quiplash3Seat[] = [];
   const saved: SeatCredentials[] = [];
   const signal = signalPromise();
@@ -79,7 +85,7 @@ async function playCommand(args: string[]): Promise<void> {
       const seat = new Quiplash3Seat(connection, player, {
         gameId,
         postGameAction: "newPlayers",
-        onEvent: printEvent,
+        onEvent: onSeatEvent,
       });
       seats.push(seat);
       await seat.connect();
@@ -116,6 +122,16 @@ async function reconnectCommand(args: string[]): Promise<void> {
   const credentials = await loadCredentials(values.credentials);
   const rooms = new Map<string, RoomInfo>();
   const seats: Quiplash3Seat[] = [];
+  const gameId = `${credentials[0]?.room ?? "ROOM"}-reconnect-${Date.now()}`;
+  const aggregator = new GameAggregator({
+    gameId,
+    expectedPlayerCount: credentials.length,
+    onEvent: printEvent,
+  });
+  const onSeatEvent = (event: AnyEvent): void => {
+    if (event.type !== "game.ended") printEvent(event);
+    aggregator.ingest(event);
+  };
   const signal = signalPromise();
   try {
     for (const saved of credentials) {
@@ -128,9 +144,9 @@ async function reconnectCommand(args: string[]): Promise<void> {
       const player = new ScriptedPlayer(saved.name, { voteOffset: saved.id });
       const connection = new EcastConnection({ room, name: saved.name, credentials: saved });
       const seat = new Quiplash3Seat(connection, player, {
-        gameId: `${saved.room}-reconnect-${Date.now()}`,
+        gameId,
         postGameAction: "none",
-        onEvent: printEvent,
+        onEvent: onSeatEvent,
       });
       seats.push(seat);
       const welcome = await seat.connect();

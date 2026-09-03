@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,7 +31,7 @@ describe("lookupRoom", () => {
 });
 
 describe("seat credentials", () => {
-  it("persists and reloads all reconnect fields", async () => {
+  it("persists reload reconnect fields without preserving device-id", async () => {
     const directory = await mkdtemp(join(tmpdir(), "quiparena-credentials-"));
     const path = join(directory, "seats.json");
     const credentials: SeatCredentials = {
@@ -43,6 +43,19 @@ describe("seat credentials", () => {
       secret: "secret",
     };
     await saveCredentials(path, [credentials]);
-    await expect(loadCredentials(path)).resolves.toEqual([{ ...credentials, room: "BEXH" }]);
+    await expect(loadCredentials(path)).resolves.toEqual([{
+      room: "BEXH",
+      name: "REC1",
+      userId: "user-id",
+      id: 4,
+      secret: "secret",
+      role: "player",
+    }]);
+    const saved = JSON.parse(await readFile(path, "utf8")) as { seats: Array<Record<string, unknown>> };
+    expect(saved).toMatchObject({
+      version: 2,
+      seats: [{ id: 4, secret: "secret", role: "player" }],
+    });
+    expect(saved.seats[0]?.deviceId).toBeUndefined();
   });
 });

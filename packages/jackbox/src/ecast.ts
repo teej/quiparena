@@ -46,7 +46,7 @@ export interface ReconnectPolicy {
 }
 
 export interface EcastConnectionOptions {
-  room: Pick<RoomInfo, "code" | "host" | "keepalive">;
+  room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch">;
   name: string;
   userId?: string;
   credentials?: SeatCredentials;
@@ -164,6 +164,9 @@ export class EntityStore extends EventEmitter<EntityStoreEventMap> {
       ...(current?.locked === undefined ? {} : { locked: current.locked }),
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
+    // Preserve reducer-like "last recognized alias wins" behavior for clients
+    // that project room/player compatibility keys from values().
+    this.#entities.delete(next.key);
     this.#entities.set(next.key, next);
     this.emit("entity", next);
     return next;
@@ -171,7 +174,7 @@ export class EntityStore extends EventEmitter<EntityStoreEventMap> {
 }
 
 export class EcastConnection extends EventEmitter<EcastEventMap> {
-  readonly room: Pick<RoomInfo, "code" | "host" | "keepalive">;
+  readonly room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch">;
   readonly name: string;
   readonly userId: string;
   readonly entities = new EntityStore();
@@ -185,6 +188,7 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
   #roomExited = false;
   #everWelcomed = false;
   #reconnectAttempts = 0;
+  #nextReconnectDelayMs: number | undefined;
   #reconnectTimer: NodeJS.Timeout | undefined;
   #connectPromise: Promise<EcastWelcome> | undefined;
   #recording: Promise<void> = Promise.resolve();
@@ -221,9 +225,12 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
       room: this.room.code,
       name: welcome.name,
       userId: this.userId,
-      deviceId: welcome.deviceId,
       id: welcome.id,
       secret: welcome.secret,
+      ...(this.room.controllerBranch ? { branch: this.room.controllerBranch } : {}),
+      role: "player",
+      // Available for an in-memory, same-page reconnect. saveCredentials omits it.
+      deviceId: welcome.deviceId,
     };
   }
 
@@ -235,6 +242,7 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
     this.#manualClose = false;
     this.#roomExited = false;
     this.#reconnectAttempts = 0;
+    this.#nextReconnectDelayMs = undefined;
     const promise = this.#openSocket();
     this.#connectPromise = promise;
     try {
@@ -313,13 +321,14 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
 
     // UNVERIFIED: the recordings contain reconnect URLs, not a fresh-player URL;
     // the credentials-free form follows docs/ecast-protocol.md §2.
-    const credentials = this.#welcome
-      ? this.credentials
-      : this.#options.credentials;
+    const samePageReconnect = this.#welcome !== undefined;
+    const credentials = samePageReconnect ? this.credentials : this.#options.credentials;
     if (credentials) {
       url.searchParams.set("id", String(credentials.id));
       url.searchParams.set("secret", credentials.secret);
-      url.searchParams.set("device-id", credentials.deviceId);
+      if (samePageReconnect && credentials.deviceId) {
+        url.searchParams.set("device-id", credentials.deviceId);
+      }
     }
     return url.toString();
   }
@@ -463,6 +472,7 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
     this.#welcome = welcome;
     this.#everWelcomed = true;
     this.#reconnectAttempts = 0;
+    this.#nextReconnectDelayMs = undefined;
     this.emit("welcome", welcome);
     return welcome;
   }
@@ -472,23 +482,29 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
     this.#socket = undefined;
     this.emit("close", code, reason);
     this.#rejectPending(new Error(`Ecast socket closed (${code}${reason ? `: ${reason}` : ""})`));
-    if (this.#manualClose || this.#roomExited || !this.#everWelcomed || code === 1000 || code === 1005) return;
+    // The official Quiplash controller automatically reconnects only abnormal
+    // close 1006. Normal/no-status and every other close are terminal.
+    if (this.#manualClose || this.#roomExited || !this.#everWelcomed || code !== 1006) return;
 
     const policy = this.#options.reconnect;
     if (policy?.enabled === false) return;
-    const maxAttempts = policy?.maxAttempts ?? 5;
+    const maxAttempts = policy?.maxAttempts ?? 6;
     if (this.#reconnectAttempts >= maxAttempts) {
       this.emit("error", new Error(`Ecast reconnect exhausted after ${maxAttempts} attempts`));
       return;
     }
     const attempt = ++this.#reconnectAttempts;
-    // UNVERIFIED: the real traces are successful reconnects but do not include a
-    // dropped socket/backoff cycle; bounds follow docs/ecast-protocol.md §7.
     const base = policy?.baseDelayMs ?? 1_000;
     const cap = policy?.maxDelayMs ?? 13_000;
     const jitter = policy?.jitterMs ?? 499;
-    const delay = Math.min(cap, base * 2 ** (attempt - 1))
-      + (jitter > 0 ? Math.floor(Math.random() * (jitter + 1)) : 0);
+    if (this.#nextReconnectDelayMs === undefined) {
+      this.#nextReconnectDelayMs = Math.min(
+        cap,
+        base + (jitter > 0 ? Math.floor(Math.random() * (jitter + 1)) : 0),
+      );
+    }
+    const delay = attempt === 1 ? 0 : this.#nextReconnectDelayMs;
+    if (attempt > 1) this.#nextReconnectDelayMs = Math.min(cap, this.#nextReconnectDelayMs * 2);
     this.emit("reconnecting", attempt, delay);
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = undefined;
