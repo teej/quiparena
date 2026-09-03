@@ -165,7 +165,7 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
     if (!accumulator) {
       accumulator = {
         round,
-        prompt,
+        prompt: canonicalPrompt(prompt),
         answers: new Map(),
         requests: new Map(),
         votes: new Map(),
@@ -191,7 +191,7 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
   #thriplashFor(prompt: string): ThriplashAccumulator {
     if (!this.#thriplash) {
       this.#thriplash = {
-        prompt,
+        prompt: canonicalPrompt(prompt),
         entries: new Map(),
         requests: new Map(),
         votes: new Map(),
@@ -290,11 +290,19 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
 }
 
 function normalKey(round: 1 | 2, prompt: string): string {
-  return `${round}\u0000${prompt}`;
+  return `${round}\u0000${normalizedPrompt(prompt)}`;
 }
 
 function normalized(value: string): string {
-  return value.normalize("NFC").replace(/\s+/g, " ").trim();
+  return value.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+}
+
+function normalizedPrompt(value: string): string {
+  return normalized(canonicalPrompt(value));
+}
+
+function canonicalPrompt(value: string): string {
+  return value.replace(/\s*vote for your favorite\s*$/i, "").trim();
 }
 
 function answerIndex(answers: readonly [Answer, Answer], text: string): number {

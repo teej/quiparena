@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { AnyEvent } from "@quiparena/core";
 
@@ -9,6 +9,7 @@ import { GameAggregator } from "./aggregator.js";
 import { loadCredentials, saveCredentials, type SeatCredentials } from "./credentials.js";
 import { EcastConnection } from "./ecast.js";
 import { Quiplash3Seat } from "./quiplash3.js";
+import { replayDirectory, type ReplayCount, type ReplayOccurrence } from "./replay.js";
 import { lookupRoom, type RoomInfo } from "./room.js";
 import { ScriptedPlayer } from "./scripted-player.js";
 
@@ -18,6 +19,7 @@ function usage(): never {
     "  pnpm --filter @quiparena/jackbox lookup --room CODE",
     "  pnpm --filter @quiparena/jackbox play --room CODE --players N [--record DIR] [--credentials FILE]",
     "  pnpm --filter @quiparena/jackbox reconnect --credentials FILE",
+    "  pnpm --filter @quiparena/jackbox replay --dir DIR",
   ].join("\n"));
   process.exit(2);
 }
@@ -61,6 +63,8 @@ async function playCommand(args: string[]): Promise<void> {
   }
   if (room.locked) throw new Error(`Room ${room.code} is locked`);
   if (room.full) throw new Error(`Room ${room.code} is full`);
+  const recordDir = values.record ? resolveOptionPath(values.record) : undefined;
+  const credentialsFile = values.credentials ? resolveOptionPath(values.credentials) : undefined;
 
   const gameId = `${room.code}-${Date.now()}`;
   const aggregator = new GameAggregator({ gameId, expectedPlayerCount: playerCount, onEvent: printEvent });
@@ -80,7 +84,7 @@ async function playCommand(args: string[]): Promise<void> {
       const connection = new EcastConnection({
         room,
         name,
-        ...(values.record ? { recordFile: join(values.record, `${name}.jsonl`) } : {}),
+        ...(recordDir ? { recordFile: join(recordDir, `${name}.jsonl`) } : {}),
       });
       const seat = new Quiplash3Seat(connection, player, {
         gameId,
@@ -92,7 +96,7 @@ async function playCommand(args: string[]): Promise<void> {
       const credentials = connection.credentials;
       if (!credentials) throw new Error(`${name} connected without reconnect credentials`);
       saved.push(credentials);
-      if (values.credentials) await saveCredentials(values.credentials, saved);
+      if (credentialsFile) await saveCredentials(credentialsFile, saved);
       await seat.waitUntilAvatarSelected();
     }
 
@@ -119,7 +123,7 @@ async function reconnectCommand(args: string[]): Promise<void> {
     strict: true,
   });
   if (!values.credentials) usage();
-  const credentials = await loadCredentials(values.credentials);
+  const credentials = await loadCredentials(resolveOptionPath(values.credentials));
   const rooms = new Map<string, RoomInfo>();
   const seats: Quiplash3Seat[] = [];
   const gameId = `${credentials[0]?.room ?? "ROOM"}-reconnect-${Date.now()}`;
@@ -162,6 +166,27 @@ async function reconnectCommand(args: string[]): Promise<void> {
   }
 }
 
+async function replayCommand(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: { dir: { type: "string" } },
+    strict: true,
+  });
+  if (!values.dir) usage();
+  const reports = await replayDirectory(resolveOptionPath(values.dir));
+  for (const report of reports) {
+    console.log([
+      report.seat,
+      `states seen: ${formatCounts(report.statesSeen)}`,
+      `actions sent: ${formatCounts(report.actionsSent)}`,
+      `missed states: ${formatOccurrences(report.missedStates)}`,
+      `extra actions: ${formatOccurrences(report.extraActions)}`,
+      `unassigned actions: ${report.unassignedActions}`,
+    ].join(" | "));
+  }
+  if (reports.some((report) => !report.ok)) process.exitCode = 1;
+}
+
 function signalPromise(): {
   promise: Promise<"signal">;
   dispose: () => void;
@@ -186,6 +211,22 @@ function printEvent(event: AnyEvent): void {
   console.log(JSON.stringify(event));
 }
 
+function resolveOptionPath(path: string): string {
+  return resolve(process.env.INIT_CWD || process.cwd(), path);
+}
+
+function formatCounts(counts: ReplayCount): string {
+  return `EnterSingleText=${counts.EnterSingleText}, EnterTextList=${counts.EnterTextList}, MakeSingleChoice=${counts.MakeSingleChoice}`;
+}
+
+function formatOccurrences(occurrences: readonly ReplayOccurrence[]): string {
+  if (occurrences.length === 0) return "none";
+  return occurrences.map((occurrence) => {
+    const version = occurrence.version === undefined ? "" : ` v${occurrence.version}`;
+    return `${occurrence.state}${version} (${JSON.stringify(occurrence.prompt)}) x${occurrence.actionsSent}`;
+  }).join(", ");
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   switch (command) {
@@ -197,6 +238,9 @@ async function main(): Promise<void> {
       break;
     case "reconnect":
       await reconnectCommand(args);
+      break;
+    case "replay":
+      await replayCommand(args);
       break;
     default:
       usage();

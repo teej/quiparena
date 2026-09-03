@@ -6,6 +6,47 @@ import { GameAggregator } from "../src/aggregator.js";
 const at = "2026-09-02T20:00:00.000Z";
 
 describe("GameAggregator", () => {
+  it("matches vote prompts without their suffix and uppercased choices to canonical answers", () => {
+    const emitted: GameEvent[] = [];
+    const aggregator = new GameAggregator({
+      gameId: "game-4",
+      expectedPlayerCount: 4,
+      onEvent: (event) => emitted.push(event),
+    });
+    ["p1", "p2", "p3", "p4"].forEach((id) => add(aggregator, {
+      type: "player.joined",
+      gameId: "game-4",
+      player: { id, name: id.toUpperCase(), modelId: null },
+      at,
+    }));
+    add(aggregator, answer("p1", 1, "A tiny profession", "QA1: A tiny horse with a law degree"));
+    add(aggregator, answer("p2", 1, "A tiny profession", "QA2: An emotional-support foghorn"));
+    const votePrompt = "A tiny profession\nVote for your favorite";
+    const options = [
+      "QA2: AN EMOTIONAL-SUPPORT FOGHORN",
+      "QA1: A TINY HORSE WITH A LAW DEGREE",
+    ];
+    add(aggregator, voteRequest("p3", 1, votePrompt, options));
+    add(aggregator, voteCast("p3", 1, votePrompt, 1, "1", options[1]));
+    add(aggregator, voteRequest("p4", 1, votePrompt, options));
+    add(aggregator, voteCast("p4", 1, votePrompt, 0, "0", options[0]));
+
+    const matchup = emitted.find((event) => event.type === "matchup.resolved");
+    expect(matchup).toMatchObject({
+      matchup: {
+        prompt: "A tiny profession",
+        answers: [
+          { playerId: "p2", text: "QA2: An emotional-support foghorn" },
+          { playerId: "p1", text: "QA1: A tiny horse with a law degree" },
+        ],
+        votes: [
+          { voterId: "p3", choice: 1 },
+          { voterId: "p4", choice: 0 },
+        ],
+      },
+    });
+  });
+
   it("reconstructs a synthetic four-seat game without player-visible result fields", () => {
     const emitted: GameEvent[] = [];
     const aggregator = new GameAggregator({

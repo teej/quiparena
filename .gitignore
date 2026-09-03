@@ -15,3 +15,6 @@ spike/recordings/*.jsonl
 spike/recordings/*.png
 spike/recordings/*.html
 spike/.browsers/
+
+# live game recordings (may contain seat credentials)
+recordings/

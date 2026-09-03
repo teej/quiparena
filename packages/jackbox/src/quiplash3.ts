@@ -42,6 +42,11 @@ interface StateTiming {
   enteredAt: number;
 }
 
+interface ActiveOccurrence {
+  token: string;
+  handled: boolean;
+}
+
 export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   readonly connection: EcastConnection;
   readonly player: Player;
@@ -58,9 +63,8 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
   #cancelAttempted = false;
   #normalAnswerCount = 0;
   #round?: RoundNumber;
-  #handledEntries = new Set<string>();
-  #normalEntriesSeen = new Set<string>();
-  #handledChoices = new Set<string>();
+  #entryOccurrence: ActiveOccurrence | undefined;
+  #choiceOccurrence: ActiveOccurrence | undefined;
   #loggedNoopStates = new Set<string>();
   #stateTiming?: StateTiming;
   #resolveEnded!: () => void;
@@ -139,6 +143,11 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
 
   waitForGameEnd(): Promise<void> {
     return this.#endedPromise;
+  }
+
+  /** Wait until all state updates observed so far have finished processing. */
+  waitForIdle(): Promise<void> {
+    return this.#actions;
   }
 
   async waitUntilCanStart(timeoutMs = 30_000): Promise<void> {
@@ -235,6 +244,15 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     if (!welcome) return;
     const raw = this.#view();
     const state = typeof raw.merged.state === "string" ? raw.merged.state : undefined;
+
+    // entryId and choiceId are layout-local cursor values, not globally unique
+    // state identifiers. The host reuses them across rounds and matchups, so an
+    // occurrence ends when its layout does (and can also advance in-place when
+    // its prompt/cursor changes).
+    if (state !== "EnterSingleText" && state !== "EnterTextList") {
+      this.#entryOccurrence = undefined;
+    }
+    if (state !== "MakeSingleChoice") this.#choiceOccurrence = undefined;
 
     if (!this.#started && (raw.merged.gameIsStarting === true || isRoundState(state))) {
       this.#started = true;
@@ -333,19 +351,22 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     const state = raw.merged;
     // The official layout keeps the form open for every falsy entry. doneText
     // is presentation only and is deliberately not a completion signal.
-    if (Boolean(state.entry)) return;
+    if (Boolean(state.entry)) {
+      this.#entryOccurrence = undefined;
+      return;
+    }
     const prompt = extractPrompt(state.prompt);
     const token = entryToken(state, raw.playerEntity);
-    if (this.#handledEntries.has(token)) return;
+    if (this.#entryOccurrence?.token !== token) {
+      this.#entryOccurrence = { token, handled: false };
+    }
+    if (this.#entryOccurrence.handled) return;
     if (!prompt) {
       this.#logRaw("EnterSingleText did not contain a usable prompt", raw);
       return;
     }
-    this.#handledEntries.add(token);
-    if (!this.#normalEntriesSeen.has(token)) {
-      this.#normalEntriesSeen.add(token);
-      this.#normalAnswerCount += 1;
-    }
+    this.#entryOccurrence.handled = true;
+    this.#normalAnswerCount += 1;
 
     const round = this.#observeRound(inferRound(
       state,
@@ -395,7 +416,6 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
-      this.#handledEntries.delete(token);
       this.#logRaw("Single-answer submission failed", raw, error);
       this.#reportError(asError(error));
     }
@@ -435,15 +455,21 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
 
   async #handleThriplash(raw: StateView): Promise<void> {
     const state = raw.merged;
-    if (Boolean(state.entries)) return;
+    if (Boolean(state.entries)) {
+      this.#entryOccurrence = undefined;
+      return;
+    }
     const prompt = extractPrompt(state.prompt);
     const token = entryToken(state, raw.playerEntity);
-    if (this.#handledEntries.has(token)) return;
+    if (this.#entryOccurrence?.token !== token) {
+      this.#entryOccurrence = { token, handled: false };
+    }
+    if (this.#entryOccurrence.handled) return;
     if (!prompt) {
       this.#logRaw("EnterTextList did not contain a usable prompt", raw);
       return;
     }
-    this.#handledEntries.add(token);
+    this.#entryOccurrence.handled = true;
 
     const round = this.#observeRound(3);
     const timeoutMs = this.#options.defaultThriplashTimeoutMs;
@@ -487,7 +513,6 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
-      this.#handledEntries.delete(token);
       this.#logRaw("Thriplash submission failed", raw, error);
       this.#reportError(asError(error));
     }
@@ -524,16 +549,22 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
     const state = raw.merged;
     // The controller shows choices for null and the empty string. Treat missing
     // data like its null model default; doneText alone never completes a vote.
-    if (state.chosen !== null && state.chosen !== undefined && state.chosen !== "") return;
+    if (state.chosen !== null && state.chosen !== undefined && state.chosen !== "") {
+      this.#choiceOccurrence = undefined;
+      return;
+    }
     const prompt = extractPrompt(state.prompt);
     const choices = projectChoices(state.choices);
     const token = choiceToken(state, raw.playerEntity, choices);
-    if (this.#handledChoices.has(token)) return;
+    if (this.#choiceOccurrence?.token !== token) {
+      this.#choiceOccurrence = { token, handled: false };
+    }
+    if (this.#choiceOccurrence.handled) return;
     if (!prompt || choices.length === 0) {
       this.#logRaw("MakeSingleChoice did not contain a usable prompt and choices", raw);
       return;
     }
-    this.#handledChoices.add(token);
+    this.#choiceOccurrence.handled = true;
 
     const round = this.#observeRound(inferRound(state, "MakeSingleChoice", this.#round));
     const timeoutMs = this.#options.defaultVoteTimeoutMs;
@@ -579,7 +610,6 @@ export class Quiplash3Seat extends EventEmitter<Quiplash3SeatEventMap> {
         at: this.#at(),
       });
     } catch (error) {
-      this.#handledChoices.delete(token);
       this.#logRaw("Vote submission failed", raw, error);
       this.#reportError(asError(error));
     }
@@ -783,15 +813,16 @@ function stateToken(state: Record<string, unknown>): string {
     state.state,
     primitiveToken(state.entryId),
     primitiveToken(state.choiceId),
+    extractPrompt(state.prompt),
     state.gameFinished === true,
     primitiveToken(state.lobbyState),
   ]);
 }
 
 function entryToken(state: Record<string, unknown>, entity?: EntityRecord): string {
-  const entryId = primitiveToken(state.entryId);
-  return entryId ?? JSON.stringify([
+  return JSON.stringify([
     state.state,
+    primitiveToken(state.entryId),
     state.textKey,
     extractPrompt(state.prompt),
     entity?.key,
@@ -803,9 +834,9 @@ function choiceToken(
   entity: EntityRecord | undefined,
   choices: readonly ChoiceProjection[],
 ): string {
-  const choiceId = primitiveToken(state.choiceId);
-  return choiceId ?? JSON.stringify([
+  return JSON.stringify([
     state.state,
+    primitiveToken(state.choiceId),
     extractPrompt(state.prompt),
     choices.map((choice) => [choice.label, choice.runtimeId]),
     entity?.key,
