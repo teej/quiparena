@@ -107,6 +107,8 @@ function addTrace(state: LiveState, trace: AnswerTrace): LiveState {
 
 export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState {
   if (event.type === "game.created") {
+    // Every harness seat announces the game; only the first announcement resets state.
+    if (previous.gameId === event.gameId) return previous;
     return {
       ...createEmptyLiveState(),
       gameId: event.gameId,
@@ -268,7 +270,8 @@ export function reduceLiveState(previous: LiveState, event: AnyEvent): LiveState
         ),
       };
     case "harness.error":
-      return { ...state, phase: "error", error: event.message };
+      // Per-seat trouble (a model missing its deadline, a watchdog nudge) is not a game failure.
+      return { ...state, error: event.message };
     case "answer.rejected":
       // The harness re-asks the player; the eventual answer.submitted updates the card.
       return state;
