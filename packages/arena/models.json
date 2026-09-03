@@ -1,0 +1,186 @@
+{
+  "reviewStatus": "to be reviewed by TJ",
+  "catalogCheckedAt": "2026-09-02",
+  "models": [
+    {
+      "slug": "openai/gpt-5.6-sol",
+      "displayName": "GPT-5.6 Sol",
+      "lab": "OpenAI",
+      "released": "2026-07-09",
+      "reasoning": { "effort": "low" },
+      "temperature": null,
+      "enabled": true,
+      "rationale": "OpenAI's current GPT-5.6 flagship; reasoning model."
+    },
+    {
+      "slug": "openai/gpt-5.6-luna",
+      "displayName": "GPT-5.6 Luna",
+      "lab": "OpenAI",
+      "released": "2026-07-09",
+      "reasoning": { "effort": "low" },
+      "temperature": null,
+      "enabled": true,
+      "rationale": "Fast, inexpensive GPT-5.6 tier for a current OpenAI mid-tier comparison; reasoning model."
+    },
+    {
+      "slug": "anthropic/claude-fable-5.1",
+      "displayName": "Fable 5.1",
+      "lab": "Anthropic",
+      "released": "2026-09-01",
+      "reasoning": { "effort": "low" },
+      "temperature": null,
+      "enabled": true,
+      "rationale": "Anthropic's newest top-end release, one day old at catalog review; mandatory reasoning."
+    },
+    {
+      "slug": "anthropic/claude-sonnet-5",
+      "displayName": "Sonnet 5",
+      "lab": "Anthropic",
+      "released": "2026-06-30",
+      "reasoning": { "effort": "low" },
+      "temperature": null,
+      "enabled": true,
+      "rationale": "Anthropic's current value/performance tier; reasoning model."
+    },
+    {
+      "slug": "google/gemini-3.1-pro-preview",
+      "displayName": "Gemini Pro",
+      "lab": "Google",
+      "released": "2026-02-19",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Google's newest text-output Pro flagship still listed; mandatory reasoning."
+    },
+    {
+      "slug": "google/gemini-3.8-flash",
+      "displayName": "Gemini 3.8",
+      "lab": "Google",
+      "released": "2026-09-02",
+      "reasoning": { "maxTokens": 256 },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Google's newest and fastest general Gemini, released on catalog-review day; reasoning model."
+    },
+    {
+      "slug": "x-ai/grok-4.6",
+      "displayName": "Grok 4.6",
+      "lab": "xAI",
+      "released": "2026-08-12",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "xAI's newest flagship and stated smartest model; reasoning model."
+    },
+    {
+      "slug": "meta-llama/llama-4-maverick",
+      "displayName": "Llama 4",
+      "lab": "Meta",
+      "released": "2025-04-05",
+      "reasoning": null,
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Meta's highest-capacity current Llama instruct model on OpenRouter; non-reasoning baseline."
+    },
+    {
+      "slug": "deepseek/deepseek-v4-pro-0813",
+      "displayName": "DS V4 Pro",
+      "lab": "DeepSeek",
+      "released": "2026-08-12",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "DeepSeek's newest GA V4 Pro flagship; reasoning model."
+    },
+    {
+      "slug": "deepseek/deepseek-v4-flash-0731",
+      "displayName": "DS V4 Flash",
+      "lab": "DeepSeek",
+      "released": "2026-07-31",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "DeepSeek's recent low-cost V4 speed tier; reasoning model."
+    },
+    {
+      "slug": "qwen/qwen3.8-max",
+      "displayName": "Qwen 3.8 Max",
+      "lab": "Qwen/Alibaba",
+      "released": "2026-08-03",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Alibaba's current Qwen3.8 flagship; reasoning model."
+    },
+    {
+      "slug": "qwen/qwen3.8-flash",
+      "displayName": "Qwen Flash",
+      "lab": "Qwen/Alibaba",
+      "released": "2026-08-26",
+      "reasoning": { "maxTokens": 256 },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Alibaba's newest economical Qwen release; reasoning model."
+    },
+    {
+      "slug": "mistralai/mistral-medium-3-5",
+      "displayName": "Mistral 3.5",
+      "lab": "Mistral",
+      "released": "2026-04-30",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Mistral's newest general-purpose dense model; reasoning model."
+    },
+    {
+      "slug": "moonshotai/kimi-k3",
+      "displayName": "Kimi K3",
+      "lab": "Moonshot AI",
+      "released": "2026-07-16",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Moonshot's newest 2.8T-parameter flagship; reasoning model."
+    },
+    {
+      "slug": "minimax/minimax-m3",
+      "displayName": "MiniMax M3",
+      "lab": "MiniMax",
+      "released": "2026-05-31",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "MiniMax's newest general foundation model; reasoning model."
+    },
+    {
+      "slug": "z-ai/glm-5.3",
+      "displayName": "GLM 5.3",
+      "lab": "Zhipu/Z.ai",
+      "released": "2026-08-18",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Z.ai's newest full-size GLM flagship; reasoning model."
+    },
+    {
+      "slug": "inception/mercury-2.5-preview",
+      "displayName": "Mercury 2.5",
+      "lab": "Inception",
+      "released": "2026-08-31",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "A two-day-old diffusion-language-model release chosen for architectural diversity; reasoning model."
+    },
+    {
+      "slug": "tencent/hy4-preview",
+      "displayName": "Tencent Hy4",
+      "lab": "Tencent",
+      "released": "2026-08-28",
+      "reasoning": { "effort": "low" },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Tencent's newest large MoE preview adds another recent major-lab contender; reasoning model."
+    }
+  ]
+}

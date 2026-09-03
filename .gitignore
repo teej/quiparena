@@ -12,3 +12,5 @@ __pycache__/
 coverage/
 spike/recordings/*.jsonl
 spike/recordings/*.png
+spike/recordings/*.html
+spike/.browsers/

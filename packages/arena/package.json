@@ -6,9 +6,27 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "bin": { "quiparena": "./dist/cli.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cli": "node --env-file-if-exists=../../.env --import tsx ./src/cli.ts",
+    "ask": "node --env-file-if-exists=../../.env --import tsx ./src/cli.ts ask",
+    "vote": "node --env-file-if-exists=../../.env --import tsx ./src/cli.ts vote",
+    "roster": "node --env-file-if-exists=../../.env --import tsx ./src/cli.ts roster"
+  },
+  "dependencies": {
+    "@openrouter/ai-sdk-provider": "3.0.0",
+    "@quiparena/core": "workspace:*",
+    "@quiparena/jackbox": "workspace:*",
+    "ai": "7.0.91",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.5",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
   }
 }
