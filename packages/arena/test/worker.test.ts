@@ -10,7 +10,7 @@ import type { RosterModel } from "../src/registry.js";
 import { WorkerEventBus } from "../src/worker/bus.js";
 import { FakeHarness } from "../src/worker/fake-harness.js";
 import { runGame, type RunGameOptions } from "../src/worker/game-runner.js";
-import { runLoop } from "../src/worker/loop.js";
+import { loadLobbyHistoryFromApi, runLoop } from "../src/worker/loop.js";
 import { DbSink } from "../src/worker/sinks.js";
 
 function roster(count: number): RosterModel[] {
@@ -190,5 +190,108 @@ describe("arena worker", () => {
     expect(seen[0]).toContain("test/model-1");
     expect(seen[1]).toContain("test/model-1");
     expect(seen[2]).not.toContain("test/model-1");
+  });
+
+  it("seeds keepers from the previous process and logs every selection rationale", async () => {
+    const entries = roster(6);
+    const selected: string[][] = [];
+    const messages: string[] = [];
+    const play = async (options: RunGameOptions): Promise<Game> => ({
+      id: options.gameId!,
+      roomCode: options.roomCode,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      players: options.roster.map((entry, index) => ({
+        id: `new-${index}`,
+        name: entry.displayName,
+        modelId: entry.slug,
+      })),
+      matchups: [],
+      finalScores: {},
+    });
+    await runLoop({
+      roomCode: "FAKE",
+      roster: entries,
+      players: 3,
+      keep: 2,
+      seedHistory: [{
+        id: "previous-process",
+        players: [
+          { id: "old-1", modelId: "test/model-1", placement: 3, totalScore: 100 },
+          { id: "old-2", modelId: "test/model-2", placement: 1, totalScore: 300 },
+          { id: "old-3", modelId: "test/model-3", placement: 2, totalScore: 200 },
+        ],
+        finalScores: { "old-1": 100, "old-2": 300, "old-3": 200 },
+      }],
+      gameClient: new FakeHarness({ playerCount: 3 }),
+      runGame: play,
+      rng: () => 0,
+      maxGames: 1,
+      logger: {
+        info: (message) => messages.push(message),
+        warn: (message) => messages.push(message),
+        error: (message) => messages.push(message),
+      },
+      onGame: (_game, gameRoster) => selected.push(gameRoster.map((entry) => entry.slug)),
+    });
+    expect(selected[0]?.slice(0, 2)).toEqual(["test/model-2", "test/model-3"]);
+    expect(messages.filter((message) => message.includes("[quiparena/worker] pick "))).toHaveLength(3);
+    expect(messages.some((message) => message.includes("keeper placement=1 points=300"))).toBe(true);
+    expect(messages.some((message) => message.includes("rotation games=0 weight=1 sat-out-last-game"))).toBe(true);
+  });
+
+  it("loads completed history from the ingest web archive API", async () => {
+    const fetch = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith("/api/games")) {
+        return Response.json([
+          { id: "running", startedAt: "2026-09-02T11:00:00Z", endedAt: null },
+          { id: "done", startedAt: "2026-09-02T10:00:00Z", endedAt: "2026-09-02T10:20:00Z" },
+        ]);
+      }
+      return Response.json({
+        game: {
+          id: "done",
+          roomCode: "DONE",
+          startedAt: "2026-09-02T10:00:00Z",
+          players: [
+            { id: "p1", name: "One", modelId: "test/model-1" },
+            { id: "p2", name: "Two", modelId: "test/model-2" },
+          ],
+          matchups: [{
+            id: "old-matchup",
+            gameId: "done",
+            round: 1,
+            index: 0,
+            prompt: "Old prompt",
+            answers: [
+              { playerId: "p1", text: "One", blank: false },
+              { playerId: "p2", text: "Two", blank: false },
+            ],
+            votes: [{ voterId: "v1", population: "player", choice: 0 }],
+          }],
+        },
+      });
+    };
+    await expect(loadLobbyHistoryFromApi("ws://127.0.0.1:8787/ingest", fetch)).resolves.toEqual([{
+      id: "done",
+      status: "completed",
+      players: [{
+        id: "p1",
+        playerId: "p1",
+        modelId: "test/model-1",
+        modelSlug: "test/model-1",
+        placement: 1,
+        totalScore: 1_250,
+      }, {
+        id: "p2",
+        playerId: "p2",
+        modelId: "test/model-2",
+        modelSlug: "test/model-2",
+        placement: 2,
+        totalScore: 0,
+      }],
+      finalScores: { p1: 1_250, p2: 0 },
+    }]);
   });
 });

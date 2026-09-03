@@ -5,12 +5,19 @@ import type { Player } from "@quiparena/jackbox";
 
 import type { ArenaDatabaseClient } from "../db/client.js";
 import {
+  abandonStaleGames,
+  backfillCompletedGameScores,
+  loadLobbyHistoryFromDb,
+} from "../db/operations.js";
+import {
   pickNextLobby,
+  type LobbyPickRationale,
   type LobbyGameHistory,
   type LobbyHistoryEntry,
 } from "../lobby.js";
 import { computeRatings, type ComputeRatingsOptions, type RatingRun } from "../ratings.js";
 import type { RosterModel } from "../registry.js";
+import { placementsFromScores, scoreGame } from "../scoring.js";
 import { WorkerEventBus } from "./bus.js";
 import {
   GameAbortedError,
@@ -55,6 +62,8 @@ export interface RunLoopOptions {
   rng?: () => number;
   logger?: LoopLogger;
   ratingsOptions?: ComputeRatingsOptions;
+  /** Completed history, oldest first, used when this process has no local DB. */
+  seedHistory?: readonly LobbyGameHistory[];
   /** Test/ops escape hatch; the CLI intentionally leaves this unset. */
   maxGames?: number;
   runGame?: (options: RunGameOptions) => Promise<Game>;
@@ -160,6 +169,95 @@ function lobbyScores(game: Game): Record<string, number> {
   return scores;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function historyApiUrl(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol === "ws:") url.protocol = "http:";
+  if (url.protocol === "wss:") url.protocol = "https:";
+  url.pathname = "/api/games";
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+
+/** Load completed rotation history from the public archive API behind --ingest. */
+export async function loadLobbyHistoryFromApi(
+  ingestUrl: string,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<LobbyGameHistory[]> {
+  const listUrl = historyApiUrl(ingestUrl);
+  const response = await fetchImpl(listUrl);
+  if (!response.ok) throw new Error(`Game history API returned ${response.status} ${response.statusText}`);
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload)) throw new Error("Game history API did not return an array");
+  const completed = payload.filter((value): value is Record<string, unknown> => (
+    isRecord(value)
+    && typeof value["id"] === "string"
+    && typeof value["startedAt"] === "string"
+    && typeof value["endedAt"] === "string"
+  )).sort((left, right) => String(left["startedAt"]).localeCompare(String(right["startedAt"])));
+
+  return (await Promise.all(completed.map(async (summary) => {
+    const gameUrl = new URL(`/api/games/${encodeURIComponent(String(summary["id"]))}`, listUrl);
+    const gameResponse = await fetchImpl(gameUrl);
+    if (!gameResponse.ok) {
+      throw new Error(`Game history API could not load ${String(summary["id"])}: ${gameResponse.status}`);
+    }
+    const archive: unknown = await gameResponse.json();
+    const game = isRecord(archive) && isRecord(archive["game"])
+      ? archive["game"]
+      : archive;
+    if (!isRecord(game) || typeof game["id"] !== "string" || !Array.isArray(game["players"])) {
+      throw new Error(`Game history API returned a malformed archive for ${String(summary["id"])}`);
+    }
+    const corePlayers = game["players"].filter(isRecord).flatMap((player) => {
+      const id = player["id"];
+      const name = player["name"];
+      const modelId = player["modelId"];
+      return typeof id === "string" && typeof name === "string"
+        && (typeof modelId === "string" || modelId === null)
+        ? [{ id, name, modelId }]
+        : [];
+    });
+    let finalScores = isRecord(game["finalScores"])
+      ? Object.fromEntries(Object.entries(game["finalScores"]).filter(
+          (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ))
+      : undefined;
+    if ((!finalScores || Object.keys(finalScores).length === 0) && Array.isArray(game["matchups"])) {
+      const scoreable: Game = {
+        id: game["id"],
+        roomCode: typeof game["roomCode"] === "string" ? game["roomCode"] : "",
+        startedAt: typeof game["startedAt"] === "string" ? game["startedAt"] : "",
+        players: corePlayers,
+        matchups: game["matchups"] as Game["matchups"],
+        ...(isRecord(game["thriplash"]) ? { thriplash: game["thriplash"] as unknown as NonNullable<Game["thriplash"]> } : {}),
+      };
+      finalScores = scoreGame(scoreable).finalScores;
+    }
+    const placements = finalScores
+      ? placementsFromScores(finalScores, corePlayers.map((player) => player.id))
+      : {};
+    const players = corePlayers.map((player) => ({
+      id: player.id,
+      playerId: player.id,
+      modelId: player.modelId,
+      modelSlug: player.modelId,
+      ...(placements[player.id] === undefined ? {} : { placement: placements[player.id] }),
+      ...(finalScores?.[player.id] === undefined ? {} : { totalScore: finalScores[player.id] }),
+    }));
+    return {
+      id: game["id"],
+      status: "completed",
+      players,
+      ...(finalScores === undefined ? {} : { finalScores }),
+    } satisfies LobbyGameHistory;
+  }))).filter((game) => game.players.length > 0);
+}
+
 function toHistory(game: Game, failures: ReadonlySet<string>): LobbyGameHistory {
   const rankingScores = lobbyScores(game);
   const ordered = Object.entries(rankingScores).sort((left, right) => right[1] - left[1]);
@@ -199,7 +297,19 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const spendCap = options.dailySpendCapUsd
     ?? positiveNumber(process.env["DAILY_SPEND_CAP_USD"], DEFAULT_DAILY_SPEND_CAP_USD, "DAILY_SPEND_CAP_USD");
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
-  const history: LobbyHistoryEntry[] = [];
+  let initialHistory = [...(options.seedHistory ?? [])];
+  if (options.db) {
+    const abandoned = await abandonStaleGames(options.db);
+    if (abandoned.length > 0) {
+      logger.warn(`[quiparena/worker] abandoned stale games: ${abandoned.join(", ")}`);
+    }
+    const backfilled = await backfillCompletedGameScores(options.db);
+    if (backfilled.length > 0) {
+      logger.info(`[quiparena/worker] backfilled vote-derived scores: ${backfilled.join(", ")}`);
+    }
+    initialHistory = await loadLobbyHistoryFromDb(options.db);
+  }
+  const history: LobbyHistoryEntry[] = [...initialHistory];
   const gamesRun: Game[] = [];
   const failuresByGame = new Map<string, Set<string>>();
   const playerModels = new Map<string, string>();
@@ -208,7 +318,23 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let currentDay = new Date().toISOString().slice(0, 10);
   let spentUsd = 0;
   let currentRoomCode = options.roomCode.trim().toUpperCase();
-  let lastGame: LobbyGameHistory | null = null;
+  let lastGame: LobbyGameHistory | null = initialHistory.at(-1) ?? null;
+
+  const logPick = (pick: LobbyPickRationale<RosterModel>): void => {
+    if (pick.role === "keeper") {
+      logger.info(
+        `[quiparena/worker] pick ${pick.model.displayName}: keeper`
+        + `${pick.placement === undefined ? "" : ` placement=${pick.placement}`}`
+        + `${pick.totalScore === undefined ? "" : ` points=${pick.totalScore}`}`
+        + ` games=${pick.gamesPlayed}`,
+      );
+      return;
+    }
+    logger.info(
+      `[quiparena/worker] pick ${pick.model.displayName}: rotation games=${pick.gamesPlayed}`
+      + ` weight=${pick.weight ?? 0} ${pick.fresh ? "sat-out-last-game" : "refill"}`,
+    );
+  };
 
   const unsubscribe = bus.on((event: AnyEvent) => {
     if (event.type === "trace.completed" && event.usage?.costUsd !== undefined) {
@@ -253,6 +379,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           consecutiveFailures: benchFailures,
           lookback: Math.max(6, benchFailures),
         },
+        onPick: logPick,
         ...(options.rng === undefined ? {} : { rng: options.rng }),
       });
       activeGameId = `${currentRoomCode}-${Date.now()}-${gamesRun.length + 1}`;

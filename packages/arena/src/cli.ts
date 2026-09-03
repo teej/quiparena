@@ -4,22 +4,26 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import type { AnyEvent, Game } from "@quiparena/core";
+import type { Game } from "@quiparena/core";
 import { ScriptedPlayer, type Player, type PlayerContext } from "@quiparena/jackbox";
 import { desc } from "drizzle-orm";
 
 import { openDb, type ArenaDatabase } from "./db/client.js";
+import { abandonGame } from "./db/operations.js";
 import { games } from "./db/schema.js";
 import { runHostAgent } from "./host-agent/host-agent.js";
+import { captureFinalScores } from "./host-agent/read-scores.js";
+import type { LobbyGameHistory } from "./lobby.js";
 import { ConsoleSink, ModelPlayer, type ModelPlayerConfig } from "./model-player.js";
 import { computeRatings, leaderboard, type RatingPopulation } from "./ratings.js";
 import { loadGame } from "./recorder.js";
 import { findRosterModel, loadRoster, validateRoster, type ModelRoster } from "./registry.js";
 import type { RosterModel } from "./registry.js";
 import { WorkerEventBus } from "./worker/bus.js";
+import { CompactGameLogFormatter } from "./worker/compact-logger.js";
 import { FakeHarness } from "./worker/fake-harness.js";
 import { runGame } from "./worker/game-runner.js";
-import { runLoop } from "./worker/loop.js";
+import { loadLobbyHistoryFromApi, runLoop } from "./worker/loop.js";
 import { DbSink, IngestSink, JsonlSink, type WorkerSink } from "./worker/sinks.js";
 
 function usage(): string {
@@ -33,6 +37,8 @@ function usage(): string {
     "  quiparena ratings show [--population blended]",
     "  quiparena games list [--limit 20]",
     "  quiparena games show <id>",
+    "  quiparena games abandon <id>",
+    "  quiparena games capture-scores <id> --image PATH [--model slug]",
     "  quiparena play --room CODE [--models slug,slug,...] [--players 8] [--record DIR] [--db] [--ingest URL]",
     "  quiparena loop --room CODE [--room-file PATH] [--db] [--ingest URL]",
     "  quiparena host-agent --room-file PATH [--interval-s 15] [--once] [--image PATH]",
@@ -59,6 +65,11 @@ async function usingDb<T>(run: (db: ArenaDatabase) => Promise<T>): Promise<T> {
 function required(value: string | undefined, flag: string): string {
   if (!value) throw new Error(`Missing required ${flag}`);
   return value;
+}
+
+/** pnpm runs package scripts from the package dir; INIT_CWD is the operator's cwd. */
+export function resolveOptionPath(value: string): string {
+  return resolve(process.env["INIT_CWD"] ?? process.cwd(), value);
 }
 
 function deadlineMs(value: string | undefined): number {
@@ -238,7 +249,9 @@ async function runRatings(args: string[]): Promise<void> {
           `${String(index + 1).padStart(2)}  ${entry.rating.toFixed(0).padStart(4)}`
           + `  [${entry.lower95.toFixed(0)}, ${entry.upper95.toFixed(0)}]`
           + `  ${entry.displayName} (${entry.modelSlug})`
-          + `  games=${entry.stats.games} wins=${entry.stats.wins}`,
+          + `  games=${entry.stats.games} wins=${entry.stats.wins}`
+          + ` avg-place=${entry.stats.avgPlacement?.toFixed(2) ?? "-"}`
+          + ` avg-points=${entry.stats.avgPoints?.toFixed(0) ?? "-"}`,
         );
       }
     });
@@ -278,7 +291,37 @@ async function runGames(args: string[]): Promise<void> {
     });
     return;
   }
-  throw new Error("Usage: quiparena games <list|show>");
+  if (command === "abandon") {
+    const [id, ...extra] = rest;
+    if (!id || extra.length > 0) throw new Error("Usage: quiparena games abandon <id>");
+    await usingDb(async (db) => {
+      if (!await abandonGame(db, id)) throw new Error(`Game not found: ${id}`);
+      console.log(`Abandoned game ${id}.`);
+    });
+    return;
+  }
+  if (command === "capture-scores") {
+    const [id, ...options] = rest;
+    if (!id) throw new Error("Usage: quiparena games capture-scores <id> --image PATH [--model slug]");
+    const { values } = parseArgs({
+      args: options,
+      options: {
+        image: { type: "string" },
+        model: { type: "string" },
+      },
+      strict: true,
+    });
+    const image = resolveOptionPath(required(values.image, "--image"));
+    if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
+    await usingDb(async (db) => {
+      const result = await captureFinalScores(db, id, image, {
+        ...(values.model === undefined ? {} : { model: values.model }),
+      });
+      console.log(JSON.stringify(result, null, 2));
+    });
+    return;
+  }
+  throw new Error("Usage: quiparena games <list|show|abandon|capture-scores>");
 }
 
 function playerCount(value: string | undefined, fallback = 8): number {
@@ -326,78 +369,23 @@ function compactLiveLog(bus: WorkerEventBus): {
   costs: Map<string, number>;
   printCosts(game: Game): void;
 } {
-  const names = new Map<string, string>();
-  const models = new Map<string, string>();
-  const voteOptions = new Map<string, string[]>();
-  const shownPrompts = new Set<string>();
-  const costs = new Map<string, number>();
-  const label = (playerId: string): string => names.get(playerId) ?? playerId;
-
-  bus.on((event: AnyEvent) => {
-    switch (event.type) {
-      case "player.joined":
-        names.set(event.player.id, event.player.name);
-        if (event.player.modelId) models.set(event.player.id, event.player.modelId);
-        console.log(`join  ${event.player.name}${event.player.modelId ? ` (${event.player.modelId})` : ""}`);
-        break;
-      case "prompt.dealt": {
-        const key = `${event.gameId}\0${event.round}\0${event.prompt}`;
-        if (!shownPrompts.has(key)) {
-          shownPrompts.add(key);
-          console.log(`R${event.round} prompt  ${event.prompt}`);
-        }
-        break;
-      }
-      case "answer.submitted":
-        console.log(`  ${label(event.playerId)}: ${Array.isArray(event.answer) ? event.answer.join(" / ") : event.answer}${event.blank ? " [fallback]" : ""}`);
-        break;
-      case "vote.requested":
-        voteOptions.set(`${event.gameId}\0${event.playerId}\0${event.prompt}`, event.options);
-        break;
-      case "vote.cast": {
-        const options = voteOptions.get(`${event.gameId}\0${event.playerId}\0${event.prompt}`);
-        console.log(`  vote ${label(event.playerId)} → ${options?.[event.choice] ?? `#${event.choice + 1}`}`);
-        break;
-      }
-      case "matchup.resolved": {
-        const [left, right] = event.matchup.answers;
-        const leftVotes = event.matchup.votes.filter((vote) => vote.choice === 0)
-          .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
-        const rightVotes = event.matchup.votes.filter((vote) => vote.choice === 1)
-          .reduce((sum, vote) => sum + (vote.weight ?? 1), 0);
-        console.log(`  result ${label(left.playerId)} ${leftVotes}–${rightVotes} ${label(right.playerId)}`);
-        break;
-      }
-      case "thriplash.resolved":
-        console.log(`  thriplash resolved (${event.thriplash.votes.length} votes)`);
-        break;
-      case "game.ended":
-        console.log(event.finalScores
-          ? `final ${Object.entries(event.finalScores).sort((a, b) => b[1] - a[1]).map(([id, score]) => `${label(id)}=${score}`).join("  ")}`
-          : "final scores unavailable from controller");
-        break;
-      case "trace.completed": {
-        const model = models.get(event.playerId) ?? event.playerId;
-        costs.set(model, (costs.get(model) ?? 0) + (event.usage?.costUsd ?? 0));
-        break;
-      }
-      case "harness.error":
-        console.error(`error ${event.playerId ? `${label(event.playerId)}: ` : ""}${event.message}`);
-        break;
-      default:
-        break;
+  const formatter = new CompactGameLogFormatter();
+  bus.on((event) => {
+    for (const output of formatter.format(event)) {
+      if (output.level === "error") console.error(output.text);
+      else console.log(output.text);
     }
   });
 
   return {
-    costs,
+    costs: formatter.costs,
     printCosts: (game) => {
       console.log("costs");
       for (const player of game.players) {
         const model = player.modelId ?? player.name;
-        console.log(`  ${player.name}: $${(costs.get(model) ?? 0).toFixed(6)}`);
+        console.log(`  ${player.name}: $${(formatter.costs.get(model) ?? 0).toFixed(6)}`);
       }
-      console.log(`  total: $${[...costs.values()].reduce((sum, value) => sum + value, 0).toFixed(6)}`);
+      console.log(`  total: $${[...formatter.costs.values()].reduce((sum, value) => sum + value, 0).toFixed(6)}`);
     },
   };
 }
@@ -430,6 +418,7 @@ async function runPlay(args: string[]): Promise<void> {
   const roomCode = required(values.room, "--room").toUpperCase();
   if (!process.env["OPENROUTER_API_KEY"]) throw new Error("OPENROUTER_API_KEY is not set");
   const roster = workerRoster(await loadRoster(), values.models, values.players);
+  const recordDir = values.record === undefined ? undefined : resolveOptionPath(values.record);
   const bus = new WorkerEventBus();
   const live = compactLiveLog(bus);
   const sinks: WorkerSink[] = [];
@@ -441,7 +430,7 @@ async function runPlay(args: string[]): Promise<void> {
     }
     const ingestUrl = values.ingest ?? process.env["WEB_INGEST_URL"];
     if (ingestUrl) sinks.push(new IngestSink({ url: ingestUrl }));
-    if (values.record) sinks.push(new JsonlSink(join(values.record, "events.jsonl")));
+    if (recordDir) sinks.push(new JsonlSink(join(recordDir, "events.jsonl")));
     sinks.forEach((sink) => bus.addSink(sink));
     const signal = workerSignal();
     try {
@@ -450,9 +439,9 @@ async function runPlay(args: string[]): Promise<void> {
         roster,
         bus,
         signal: signal.signal,
-        ...(values.record === undefined ? {} : {
-          recordDir: values.record,
-          credentialsFile: join(values.record, "credentials.json"),
+        ...(recordDir === undefined ? {} : {
+          recordDir,
+          credentialsFile: join(recordDir, "credentials.json"),
         }),
       });
       live.printCosts(game);
@@ -488,6 +477,18 @@ async function runWorkerLoop(args: string[]): Promise<void> {
     }
     const ingestUrl = values.ingest ?? process.env["WEB_INGEST_URL"];
     if (ingestUrl) sinks.push(new IngestSink({ url: ingestUrl }));
+    let seedHistory: LobbyGameHistory[] | undefined;
+    if (!db && ingestUrl) {
+      try {
+        seedHistory = await loadLobbyHistoryFromApi(ingestUrl);
+        console.log(`[quiparena/worker] seeded rotation from ${seedHistory.length} completed archive games`);
+      } catch (error) {
+        console.warn(
+          `[quiparena/worker] could not seed rotation from archive API: `
+          + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
     sinks.forEach((sink) => bus.addSink(sink));
     const signal = workerSignal();
     try {
@@ -497,8 +498,9 @@ async function runWorkerLoop(args: string[]): Promise<void> {
         bus,
         credentialsFile: DEFAULT_WORKER_CREDENTIALS,
         signal: signal.signal,
-        ...(values["room-file"] === undefined ? {} : { roomFile: values["room-file"] }),
+        ...(values["room-file"] === undefined ? {} : { roomFile: resolveOptionPath(values["room-file"]) }),
         ...(db === undefined ? {} : { db }),
+        ...(seedHistory === undefined ? {} : { seedHistory }),
       });
     } finally {
       signal.dispose();
@@ -519,7 +521,7 @@ async function runHostAgentCommand(args: string[]): Promise<void> {
     },
     strict: true,
   });
-  const roomFile = required(values["room-file"], "--room-file");
+  const roomFile = resolveOptionPath(required(values["room-file"], "--room-file"));
   const intervalS = values["interval-s"] === undefined ? undefined : Number(values["interval-s"]);
   if (intervalS !== undefined && (!Number.isFinite(intervalS) || intervalS <= 0)) {
     throw new Error("--interval-s must be a positive number");
@@ -533,7 +535,7 @@ async function runHostAgentCommand(args: string[]): Promise<void> {
       signal: signal.signal,
       ...(intervalS === undefined ? {} : { intervalS }),
       ...(values.once === undefined ? {} : { once: values.once }),
-      ...(values.image === undefined ? {} : { image: values.image }),
+      ...(values.image === undefined ? {} : { image: resolveOptionPath(values.image) }),
     });
     if (values.once) {
       console.log(JSON.stringify({

@@ -13,6 +13,7 @@ import {
 
 import { assignDisplayNames } from "../lobby.js";
 import type { RosterModel } from "../registry.js";
+import { scoreMatchup, scoreThriplash, totalScores } from "../scoring.js";
 import { WorkerEventBus } from "./bus.js";
 import { buildModelPlayer, RealGameClient } from "./seat-factory.js";
 import type { GameClient, Seat } from "./seat.js";
@@ -99,6 +100,42 @@ class GameAccumulator {
   }
 }
 
+/** Adds deterministic arena scores before an event reaches any worker sink. */
+class GameScoreTracker {
+  readonly #players: string[] = [];
+  readonly #matchups = new Map<string, Matchup>();
+  #thriplash?: Thriplash;
+
+  enrich(event: AnyEvent): AnyEvent {
+    switch (event.type) {
+      case "player.joined":
+        if (!this.#players.includes(event.player.id)) this.#players.push(event.player.id);
+        return event;
+      case "matchup.resolved": {
+        const matchup = scoreMatchup(event.matchup);
+        this.#matchups.set(matchup.id, matchup);
+        return { ...event, matchup };
+      }
+      case "thriplash.resolved": {
+        const thriplash = scoreThriplash(event.thriplash);
+        this.#thriplash = thriplash;
+        return { ...event, thriplash };
+      }
+      case "game.ended":
+        return {
+          ...event,
+          finalScores: totalScores({
+            playerIds: this.#players,
+            matchups: [...this.#matchups.values()],
+            ...(this.#thriplash === undefined ? {} : { thriplash: this.#thriplash }),
+          }),
+        };
+      default:
+        return event;
+    }
+  }
+}
+
 async function existingCredentials(path: string | undefined): Promise<SeatCredentials[]> {
   if (!path) return [];
   try {
@@ -150,21 +187,23 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
 
   const gameId = options.gameId ?? `${roomCode}-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const accumulator = new GameAccumulator(gameId, roomCode);
+  const scoreTracker = new GameScoreTracker();
+  const emitScored = (event: AnyEvent): void => bus.emit(scoreTracker.enrich(event));
   const harnessAggregator = client.eventsAreAggregated
     ? undefined
     : new GameAggregator({
         gameId,
         expectedPlayerCount: options.roster.length,
-        onEvent: (event) => bus.emit(event),
+        onEvent: emitScored,
       });
   const emitSeatEvent = (event: AnyEvent): void => {
     if (!harnessAggregator) {
-      bus.emit(event);
+      emitScored(event);
       return;
     }
     // The aggregator owns the terminal event so its resolved matchups are
     // ordered before game.ended. All other per-seat events remain observable.
-    if (event.type !== "game.ended") bus.emit(event);
+    if (event.type !== "game.ended") emitScored(event);
     harnessAggregator.ingest(event);
   };
   let resolveEnded!: () => void;

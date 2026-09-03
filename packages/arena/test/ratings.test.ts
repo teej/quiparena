@@ -140,4 +140,56 @@ describe("Bradley-Terry ratings", () => {
       await db.close();
     }
   });
+
+  it("ignores abandoned game stats but keeps its fully resolved matchup comparisons", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    try {
+      await db.insert(models).values([
+        { slug: "lab/a", displayName: "A", lab: "lab", enabled: true, config: {} },
+        { slug: "lab/b", displayName: "B", lab: "lab", enabled: true, config: {} },
+      ]);
+      await db.insert(games).values([
+        { id: "completed", roomCode: "DONE", startedAt: new Date("2026-09-02T08:00:00Z"), status: "completed" },
+        { id: "abandoned", roomCode: "LOST", startedAt: new Date("2026-09-02T09:00:00Z"), status: "abandoned" },
+      ]);
+      await db.insert(gamePlayers).values([
+        { gameId: "completed", playerId: "a1", name: "A", modelSlug: "lab/a", seat: 0, placement: 2, totalScore: 100 },
+        { gameId: "completed", playerId: "b1", name: "B", modelSlug: "lab/b", seat: 1, placement: 1, totalScore: 200 },
+        { gameId: "abandoned", playerId: "a2", name: "A", modelSlug: "lab/a", seat: 0, placement: 1, totalScore: 9_999 },
+        { gameId: "abandoned", playerId: "b2", name: "B", modelSlug: "lab/b", seat: 1, placement: 2, totalScore: 1 },
+      ]);
+      await db.insert(matchups).values({
+        id: "resolved-before-abandon",
+        gameId: "abandoned",
+        round: 1,
+        index: 0,
+        prompt: "Still valid",
+      });
+      await db.insert(answers).values([
+        { id: "a-answer", gameId: "abandoned", matchupId: "resolved-before-abandon", playerId: "a2", answerIndex: 0, text: "A" },
+        { id: "b-answer", gameId: "abandoned", matchupId: "resolved-before-abandon", playerId: "b2", answerIndex: 1, text: "B" },
+      ]);
+      await db.insert(votes).values({
+        id: "resolved-vote",
+        gameId: "abandoned",
+        matchupId: "resolved-before-abandon",
+        population: "player",
+        source: "model",
+        choice: 0,
+        weight: 1,
+      });
+
+      const result = await computeRatings(db, {
+        bootstrapResamples: 0,
+        now: new Date("2026-09-02T10:00:00Z"),
+      });
+      const a = result.populations.player.find((entry) => entry.modelSlug === "lab/a")!;
+      const b = result.populations.player.find((entry) => entry.modelSlug === "lab/b")!;
+      expect(a.rating).toBeGreaterThan(b.rating);
+      expect(a.stats).toMatchObject({ games: 1, wins: 0, avgPlacement: 2, avgPoints: 100 });
+      expect(b.stats).toMatchObject({ games: 1, wins: 1, avgPlacement: 1, avgPoints: 200 });
+    } finally {
+      await db.close();
+    }
+  });
 });

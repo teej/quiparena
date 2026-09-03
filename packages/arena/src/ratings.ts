@@ -1,9 +1,11 @@
 import { desc, eq } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./db/client.js";
+import { abandonStaleGames, backfillCompletedGameScores } from "./db/operations.js";
 import {
   answers,
   gamePlayers,
+  games,
   models,
   ratingSnapshots,
   votes,
@@ -251,8 +253,9 @@ interface RatingData {
 }
 
 async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
-  const [modelRows, playerRows, answerRows, voteRows] = await Promise.all([
+  const [modelRows, gameRows, playerRows, answerRows, voteRows] = await Promise.all([
     db.select({ slug: models.slug }).from(models),
+    db.select({ id: games.id, status: games.status }).from(games),
     db.select().from(gamePlayers),
     db.select({
       gameId: answers.gameId,
@@ -269,6 +272,9 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
   ]);
 
   const modelByPlayer = new Map<string, string>();
+  const completedGames = new Set(
+    gameRows.filter((game) => game.status === "completed").map((game) => game.id),
+  );
   const gameSets = new Map<string, Set<string>>();
   const wins = new Map<string, number>();
   const placements = new Map<string, number[]>();
@@ -276,6 +282,7 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
   for (const player of playerRows) {
     if (!player.modelSlug) continue;
     modelByPlayer.set(`${player.gameId}\u0000${player.playerId}`, player.modelSlug);
+    if (!completedGames.has(player.gameId)) continue;
     const played = gameSets.get(player.modelSlug) ?? new Set<string>();
     played.add(player.gameId);
     gameSets.set(player.modelSlug, played);
@@ -302,6 +309,9 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
     answerByMatchup.set(answer.matchupId, matchupAnswers);
   }
 
+  // Matchup rows exist only after matchup.resolved. Those atomic comparisons
+  // remain valid even when the containing game is later abandoned; game-level
+  // appearances, standings, wins, and points above count completed games only.
   const comparisons: Comparison[] = [];
   const matchupWins = new Map<string, number>();
   const matchupTotals = new Map<string, number>();
@@ -342,6 +352,8 @@ export async function computeRatings(
   db: ArenaDatabaseClient,
   options: ComputeRatingsOptions = {},
 ): Promise<RatingRun> {
+  await abandonStaleGames(db, { ...(options.now === undefined ? {} : { now: options.now }) });
+  await backfillCompletedGameScores(db);
   const data = await readRatingData(db);
   const computedAt = options.now ?? new Date();
   if (!Number.isFinite(computedAt.getTime())) throw new Error("Invalid ratings timestamp");

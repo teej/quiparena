@@ -13,6 +13,12 @@ import { and, asc, eq } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./db/client.js";
 import {
+  placementsFromScores,
+  scoreGame,
+  scoreMatchup,
+  scoreThriplash,
+} from "./scoring.js";
+import {
   answers,
   events,
   gamePlayers,
@@ -197,14 +203,15 @@ export class Recorder {
         await this.recordThriplash(db, event.thriplash, event.at);
         break;
 
-      case "game.ended":
+      case "game.ended": {
+        const finalScores = await finalizeGameScores(db, event.gameId);
         await db.update(games).set({
           endedAt: eventDate(event.at),
           status: "completed",
-          finalScores: event.finalScores ?? null,
+          finalScores: finalScores ?? {},
         }).where(eq(games.id, event.gameId));
-        if (event.finalScores) await this.recordPlacements(db, event.gameId, event.finalScores);
         break;
+      }
 
       case "round.started":
       case "answer.rejected":
@@ -245,6 +252,7 @@ export class Recorder {
   }
 
   private async recordMatchup(db: ArenaDatabaseClient, matchup: Matchup, at: string): Promise<void> {
+    matchup = scoreMatchup(matchup);
     await db.insert(matchups).values({
       id: matchup.id,
       gameId: matchup.gameId,
@@ -294,6 +302,7 @@ export class Recorder {
   }
 
   private async recordThriplash(db: ArenaDatabaseClient, thriplash: Thriplash, at: string): Promise<void> {
+    thriplash = scoreThriplash(thriplash);
     const id = thriplashId(thriplash.gameId);
     await db.insert(thriplashes).values({
       id,
@@ -374,20 +383,6 @@ export class Recorder {
     }
   }
 
-  private async recordPlacements(
-    db: ArenaDatabaseClient,
-    gameId: string,
-    finalScores: Record<string, number>,
-  ): Promise<void> {
-    const ordered = Object.entries(finalScores).sort((left, right) => right[1] - left[1]);
-    for (const [index, [playerId, totalScore]] of ordered.entries()) {
-      await db.update(gamePlayers).set({
-        placement: index + 1,
-        totalScore,
-      }).where(and(eq(gamePlayers.gameId, gameId), eq(gamePlayers.playerId, playerId)));
-    }
-  }
-
   private async inferTraceKind(event: TraceEvent): Promise<TraceKind> {
     const key = submissionKey(event.gameId, event.playerId, event.prompt);
     const cached = this.traceKinds.get(key);
@@ -431,6 +426,40 @@ export class Recorder {
       createdAt: eventDate(event.at),
     }).onConflictDoNothing({ target: traces.id });
   }
+}
+
+/** Recompute and persist all score projections for one normalized game. */
+export async function finalizeGameScores(
+  db: ArenaDatabaseClient,
+  gameId: string,
+): Promise<Record<string, number> | undefined> {
+  const stored = await loadGame(db, gameId);
+  if (!stored) return undefined;
+  const scored = scoreGame(stored);
+  for (const matchup of scored.matchups) {
+    await db.update(matchups).set({ scores: matchup.scores ?? {} })
+      .where(eq(matchups.id, matchup.id));
+  }
+  if (scored.thriplash) {
+    await db.update(thriplashes).set({ scores: scored.thriplash.scores ?? {} })
+      .where(eq(thriplashes.gameId, gameId));
+  }
+
+  const finalScores = scored.finalScores ?? {};
+  await db.update(games).set({ finalScores }).where(eq(games.id, gameId));
+  const playerRows = await db.select({ playerId: gamePlayers.playerId })
+    .from(gamePlayers)
+    .where(eq(gamePlayers.gameId, gameId))
+    .orderBy(asc(gamePlayers.seat));
+  const playerOrder = playerRows.map((player) => player.playerId);
+  const placements = placementsFromScores(finalScores, playerOrder);
+  for (const playerId of playerOrder) {
+    await db.update(gamePlayers).set({
+      placement: placements[playerId] ?? null,
+      totalScore: finalScores[playerId] ?? 0,
+    }).where(and(eq(gamePlayers.gameId, gameId), eq(gamePlayers.playerId, playerId)));
+  }
+  return finalScores;
 }
 
 /** Reconstruct the shared core Game shape from normalized database rows. */

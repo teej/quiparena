@@ -49,6 +49,17 @@ export interface PickNextLobbyOptions<T extends LobbyRosterModel> {
   rng?: () => number;
   /** Alias for rng, matching the model-player injection convention. */
   random?: () => number;
+  onPick?: (pick: LobbyPickRationale<T>) => void;
+}
+
+export interface LobbyPickRationale<T extends LobbyRosterModel> {
+  model: T;
+  role: "keeper" | "rotation";
+  gamesPlayed: number;
+  weight?: number;
+  placement?: number;
+  totalScore?: number;
+  fresh?: boolean;
 }
 
 const DEFAULT_BENCH: BenchRule = { consecutiveFailures: 2, lookback: 6 };
@@ -127,10 +138,16 @@ function isBenched(
   return false;
 }
 
+interface RankedFinisher<T extends LobbyRosterModel> {
+  model: T;
+  placement?: number;
+  score?: number;
+}
+
 function rankedFinishers<T extends LobbyRosterModel>(
   game: LobbyGameHistory | null | undefined,
   bySlug: ReadonlyMap<string, T>,
-): T[] {
+): RankedFinisher<T>[] {
   if (!game) return [];
   return game.players
     .map((player, order) => {
@@ -154,7 +171,11 @@ function rankedFinishers<T extends LobbyRosterModel>(
       return (right.score ?? Number.NEGATIVE_INFINITY)
         - (left.score ?? Number.NEGATIVE_INFINITY) || left.order - right.order;
     })
-    .map((item) => item.model);
+    .map((item) => ({
+      model: item.model,
+      ...(item.placement === undefined ? {} : { placement: item.placement }),
+      ...(item.score === undefined ? {} : { score: item.score }),
+    }));
 }
 
 function randomSample(rng: () => number): number {
@@ -194,14 +215,22 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
 
   const selected: T[] = [];
   const selectedSlugs = new Set<string>();
-  for (const model of rankedFinishers(options.lastGame, bySlug)) {
+  const counts = gamesPlayed(history);
+  for (const finisher of rankedFinishers(options.lastGame, bySlug)) {
     if (selected.length >= keep) break;
+    const { model } = finisher;
     if (benched.has(model.slug) || selectedSlugs.has(model.slug)) continue;
     selected.push(model);
     selectedSlugs.add(model.slug);
+    options.onPick?.({
+      model,
+      role: "keeper",
+      gamesPlayed: counts.get(model.slug) ?? 0,
+      ...(finisher.placement === undefined ? {} : { placement: finisher.placement }),
+      ...(finisher.score === undefined ? {} : { totalScore: finisher.score }),
+    });
   }
 
-  const counts = gamesPlayed(history);
   const openSeatCount = size - selected.length;
   const lastParticipants = options.lastGame ? participants(options.lastGame) : new Set<string>();
   const freshPool = eligible.filter((model) => (
@@ -233,6 +262,13 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
     if (!model) throw new Error("Lobby selection pool was exhausted");
     selected.push(model);
     selectedSlugs.add(model.slug);
+    options.onPick?.({
+      model,
+      role: "rotation",
+      gamesPlayed: counts.get(model.slug) ?? 0,
+      weight: weights[picked] ?? 0,
+      fresh: !lastParticipants.has(model.slug),
+    });
   }
   return selected;
 }

@@ -101,12 +101,12 @@ export type GameEvent =
   | { type: "matchup.resolved"; gameId: string; matchup: Matchup; at: string }
   | { type: "thriplash.resolved"; gameId: string; thriplash: Thriplash; at: string }
   | { type: "game.ended"; gameId: string; finalScores?: Record<string, number>; at: string }
-  | { type: "harness.error"; gameId?: string; playerId?: string; message: string; at: string };
+  | { type: "harness.error"; gameId?: string; playerId?: string; message: string; reason?: string; stateKey?: string; missedOccurrences?: number; at: string };
 
 /** Ephemeral streaming events, for the live site only. */
 export type StreamEvent =
   | { type: "thinking.delta"; gameId: string; playerId: string; text: string; at: string }
   | { type: "answer.draft"; gameId: string; playerId: string; text: string; at: string }
-  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; attempts?: Array<{ text: string; reason: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number }; at: string };
+  | { type: "trace.completed"; gameId: string; playerId: string; prompt: string; reasoning: string; answer: string; attempts?: Array<{ kind: "primary" | "fast" | "corrective"; ms: number; firstTokenMs: number | null; reasoningTokens: number; aborted: boolean; text?: string; reason?: string }>; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number; costUsd?: number; totalMs?: number; firstTokenMs?: number | null }; at: string };
 
 export type AnyEvent = GameEvent | StreamEvent;

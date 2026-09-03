@@ -20,8 +20,12 @@ import type { GameEvent } from "@quiparena/core";
 
 export type JsonObject = Record<string, unknown>;
 export type ScoreMap = Record<string, number>;
+export interface ObservedScore {
+  name: string;
+  score: number;
+}
 
-export const gameStatus = pgEnum("game_status", ["created", "running", "completed", "failed"]);
+export const gameStatus = pgEnum("game_status", ["created", "running", "completed", "failed", "abandoned"]);
 export const votePopulation = pgEnum("vote_population", ["player", "audience"]);
 export const voteSource = pgEnum("vote_source", ["game", "twitch", "web", "model"]);
 export const traceKind = pgEnum("trace_kind", ["answer", "final", "vote"]);
@@ -46,6 +50,7 @@ export const games = pgTable("games", {
   endedAt: timestamp("ended_at", { withTimezone: true, mode: "date" }),
   status: gameStatus("status").notNull().default("created"),
   finalScores: jsonb("final_scores").$type<ScoreMap>(),
+  observedScores: jsonb("observed_scores").$type<ObservedScore[]>(),
 }, (table) => [
   index("games_status_started_idx").on(table.status, table.startedAt),
   index("games_started_idx").on(table.startedAt),

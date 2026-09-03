@@ -4,12 +4,18 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { openDb } from "../src/db/client.js";
+import { gamePlayers, games } from "../src/db/schema.js";
 import {
   runHostAgent,
   statusFilePath,
   writeRoomFileIfChanged,
 } from "../src/host-agent/host-agent.js";
 import { parseVisionOutput, readRoomCode } from "../src/host-agent/read-code.js";
+import {
+  captureFinalScores,
+  parseFinalScores,
+} from "../src/host-agent/read-scores.js";
 
 const SAMPLE_SCREENSHOT = "/private/tmp/claude-501/-Users-teej-Code-quiparena/5101469a-c685-4910-b7fe-7b570b36f4e8/scratchpad/screen_small.png";
 const temporaryDirectories: string[] = [];
@@ -68,6 +74,53 @@ describe("writeRoomFileIfChanged", () => {
     await expect(readFile(roomFile, "utf8")).resolves.toBe("BEXH\n");
     await expect(writeRoomFileIfChanged(roomFile, "BEXH")).resolves.toBe(false);
     await expect(writeRoomFileIfChanged(roomFile, "bad")).rejects.toThrow("Invalid room code");
+  });
+});
+
+describe("final score capture", () => {
+  it("validates every model-returned name and stores observed scores beside computed scores", async () => {
+    expect(parseFinalScores(
+      '```json\n[{"name":"alpha","score":1250},{"name":"Beta","score":900}]\n```',
+      ["Alpha", "Beta"],
+    )).toEqual([{ name: "Alpha", score: 1_250 }, { name: "Beta", score: 900 }]);
+    expect(() => parseFinalScores('[{"name":"Stranger","score":1}]', ["Alpha"]))
+      .toThrow("unknown player name");
+
+    const directory = await temporaryDirectory();
+    const image = join(directory, "scores.png");
+    await writeFile(image, "mock image");
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    try {
+      await db.insert(games).values({
+        id: "score-game",
+        roomCode: "SCRS",
+        startedAt: new Date("2026-09-02T10:00:00Z"),
+        status: "completed",
+        finalScores: { p1: 1_250, p2: 800 },
+      });
+      await db.insert(gamePlayers).values([
+        { gameId: "score-game", playerId: "p1", name: "Alpha", seat: 0, placement: 1, totalScore: 1_250 },
+        { gameId: "score-game", playerId: "p2", name: "Beta", seat: 1, placement: 2, totalScore: 800 },
+      ]);
+      const generate = vi.fn(async (_image: Uint8Array, prompt: string) => {
+        expect(prompt).toContain('"Alpha", "Beta"');
+        return '[{"name":"Alpha","score":1250},{"name":"Beta","score":900}]';
+      });
+
+      await expect(captureFinalScores(db, "score-game", image, { generate, logger }))
+        .resolves.toEqual({
+          scores: [{ name: "Alpha", score: 1_250 }, { name: "Beta", score: 900 }],
+          mismatches: [{ name: "Beta", computed: 800, observed: 900 }],
+        });
+      expect((await db.select().from(games))[0]?.observedScores).toEqual([
+        { name: "Alpha", score: 1_250 },
+        { name: "Beta", score: 900 },
+      ]);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Beta computed=800 observed=900"));
+    } finally {
+      await db.close();
+    }
   });
 });
 

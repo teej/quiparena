@@ -27,7 +27,7 @@ const expectedGame: Game = {
         { playerId: "p2", text: "Oops All Barnacles", blank: false },
       ],
       votes: [{ voterId: "p2", population: "player", choice: 0 }],
-      scores: { p1: 1_000, p2: 0 },
+      scores: { p1: 1_250, p2: 0 },
     },
     {
       id: "match-2",
@@ -40,7 +40,7 @@ const expectedGame: Game = {
         { playerId: "p2", text: "No Refunds", blank: false },
       ],
       votes: [{ voterId: "p1", population: "player", choice: 1, weight: 2 }],
-      scores: { p1: 0, p2: 2_000 },
+      scores: { p1: 0, p2: 2_500 },
     },
   ],
   thriplash: {
@@ -51,9 +51,9 @@ const expectedGame: Game = {
       { playerId: "p2", lines: ["Moon curfew", "Ban beige", "Free geese"] },
     ],
     votes: [{ voterId: "p1", population: "player", choice: 1 }],
-    scores: { p1: 0, p2: 3_000 },
+    scores: { p1: 0, p2: 3_750 },
   },
-  finalScores: { p1: 1_000, p2: 5_000 },
+  finalScores: { p1: 1_250, p2: 6_250 },
 };
 
 const gameEvents: GameEvent[] = [
@@ -76,7 +76,7 @@ const gameEvents: GameEvent[] = [
   { type: "answer.submitted", gameId: expectedGame.id, round: 3, playerId: "p2", prompt: expectedGame.thriplash!.prompt, answer: expectedGame.thriplash!.entries[1]!.lines, blank: false, latencyMs: 666, at: "2026-09-02T18:00:15.000Z" },
   { type: "thriplash.resolved", gameId: expectedGame.id, thriplash: expectedGame.thriplash!, at: "2026-09-02T18:00:16.000Z" },
   { type: "vote.requested", gameId: expectedGame.id, round: 3, playerId: "p1", prompt: expectedGame.thriplash!.prompt, options: ["A", "B"], deadlineMs: 2_000, at: "2026-09-02T18:00:17.000Z" },
-  { type: "game.ended", gameId: expectedGame.id, finalScores: expectedGame.finalScores, at: expectedGame.endedAt! },
+  { type: "game.ended", gameId: expectedGame.id, at: expectedGame.endedAt! },
 ];
 
 const traceEvents: StreamEvent[] = [
