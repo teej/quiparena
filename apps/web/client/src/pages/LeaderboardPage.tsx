@@ -67,7 +67,7 @@ export function LeaderboardPage() {
                   <td className="num board__rating" title={entry.matchupsPlayed === 0 ? undefined : entry.games < 2 ? "At least two games are needed to estimate uncertainty" : `95% bootstrap interval: ${entry.intervalLow}–${entry.intervalHigh}`}>
                     <span className="board__rating-grid">
                       <span className="board__rating-value">{entry.matchupsPlayed === 0 ? "—" : entry.rating}</span>
-                      {entry.matchupsPlayed > 0 && entry.games >= 2 && <span className="board__plus-minus">±{plusMinus}</span>}
+                      {entry.matchupsPlayed > 0 && <span className="board__plus-minus">±{plusMinus}</span>}
                     </span>
                   </td>
                   <td className="num">{entry.games}</td>

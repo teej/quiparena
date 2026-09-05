@@ -234,6 +234,19 @@
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Tencent's newest large MoE preview adds another recent major-lab contender; reasoning model."
+    },
+    {
+      "slug": "z-ai/glm-5.3-flash",
+      "displayName": "GLM5.3 Flash",
+      "lab": "Zhipu/Z.ai",
+      "released": "2026-08-26",
+      "reasoning": {
+        "maxTokens": 400
+      },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "GLM 5.3 Flash, added at user request; verified in the OpenRouter catalog on 2026-09-05.",
+      "reasoningMandatory": true
     }
   ]
 }

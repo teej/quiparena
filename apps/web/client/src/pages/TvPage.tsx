@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
+import type { LivePlayerState } from "../../../shared/types.js";
 import { softColor } from "../color.js";
 import { MatchupPanel } from "../components/MatchupPanel.js";
 import { STATUS, answerText } from "../components/Pane.js";
@@ -21,6 +22,33 @@ function useScale(): number {
     return () => window.removeEventListener("resize", onResize);
   }, [pinned]);
   return scale;
+}
+
+function TvPlayer({ player }: { player: LivePlayerState }) {
+  const viewport = useRef<HTMLParagraphElement>(null);
+  const tooltipId = useId();
+  const answer = answerText(player);
+  const showAnswer = Boolean(answer && !player.vote);
+  const reasoning = player.reasoning.trimEnd();
+  const text = showAnswer ? answer! : reasoning || (player.vote && answer ? `Voted for: ${answer}` : player.prompt) || " ";
+  const streaming = player.activity === "thinking" || player.activity === "voting";
+  useLayoutEffect(() => {
+    if (viewport.current) viewport.current.scrollTop = showAnswer ? 0 : viewport.current.scrollHeight;
+  }, [text, showAnswer]);
+  return <li className="tv__player" data-activity={player.activity}
+    style={{ "--player": softColor(player.avatarColor) } as CSSProperties}
+    tabIndex={reasoning ? 0 : undefined} aria-describedby={reasoning ? tooltipId : undefined}>
+    <span className="tv__name">{player.player.name}</span>
+    <span className="tv__status">{player.activity === "waiting" ? "" : STATUS[player.activity]}</span>
+    <p className="tv__line" ref={viewport} data-kind={showAnswer ? "answer" : "reasoning"}>
+      {text}{streaming && !showAnswer && <span className="caret" aria-hidden="true" />}
+    </p>
+    {reasoning && <div className="tv__thought" id={tooltipId} role="tooltip">
+      <strong>{player.player.name} · {player.vote ? "voting thought" : "thinking"}</strong>
+      <p>{reasoning}</p>
+      {player.vote && answer && <p className="tv__thought-choice">Voted for: {answer}</p>}
+    </div>}
+  </li>;
 }
 
 export function TvPage() {
@@ -50,19 +78,7 @@ export function TvPage() {
           </span>
         </header>
         <ol className="tv__players">
-          {players.map((player) => {
-            const answer = answerText(player);
-            const tail = player.reasoning.trimEnd().slice(-140);
-            return (
-              <li className="tv__player" data-activity={player.activity} style={{ "--player": softColor(player.avatarColor) } as CSSProperties} key={player.player.id}>
-                <span className="tv__name">{player.player.name}</span>
-                <span className="tv__status">{player.activity === "waiting" ? "" : STATUS[player.activity]}</span>
-                <p className="tv__line" data-kind={answer && !player.vote ? "answer" : "reasoning"}>
-                  {answer && !player.vote ? answer : tail || player.prompt || " "}
-                </p>
-              </li>
-            );
-          })}
+          {players.map(player => <TvPlayer player={player} key={player.player.id} />)}
         </ol>
       </section>
       <MatchupPanel state={state} compact />
