@@ -300,18 +300,14 @@ function FrontierChart({ entries, frontier }: { entries: readonly FrontierEntry[
 /* ------------------------------------------------------------------- table */
 
 type SortKey = keyof Pick<FrontierEntry,
-  "displayName" | "rating" | "costPerWinUsd" | "costPerAnswerUsd" | "totalCostUsd" | "matchupWins" | "answers" | "avgAnswerMs" | "reasoningTokensPerAnswer" | "games">;
+  "displayName" | "rating" | "costPerWinUsd" | "matchupWins" | "avgAnswerMs" | "games">;
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> = [
   { key: "displayName", label: "model", numeric: false },
   { key: "rating", label: "rating", numeric: true },
   { key: "costPerWinUsd", label: "$ / win", numeric: true },
-  { key: "costPerAnswerUsd", label: "$ / answer", numeric: true },
-  { key: "totalCostUsd", label: "spend", numeric: true },
   { key: "matchupWins", label: "matchups", numeric: true },
-  { key: "answers", label: "answers", numeric: true },
   { key: "avgAnswerMs", label: "time", numeric: true },
-  { key: "reasoningTokensPerAnswer", label: "reasoning", numeric: true },
   { key: "games", label: "games", numeric: true },
 ];
 
@@ -329,7 +325,7 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
   const [sort, setSort] = useState<{ key: SortKey; direction: 1 | -1 }>({ key: "rating", direction: -1 });
   // Columns nobody has reported yet stay out of the way.
   const columns = COLUMNS.filter((column) => (
-    (column.key !== "avgAnswerMs" && column.key !== "reasoningTokensPerAnswer") || entries.some((entry) => entry[column.key] !== null)
+    column.key !== "avgAnswerMs" || entries.some((entry) => entry[column.key] !== null)
   ));
   const visible = new Set(columns.map((column) => column.key));
   const sorted = useMemo(
@@ -339,7 +335,7 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
   const toggle = (key: SortKey): void => {
     setSort((current) => (current.key === key
       ? { key, direction: current.direction === 1 ? -1 : 1 }
-      : { key, direction: key === "displayName" || key === "costPerWinUsd" || key === "costPerAnswerUsd" || key === "avgAnswerMs" ? 1 : -1 }));
+      : { key, direction: key === "displayName" || key === "costPerWinUsd" || key === "avgAnswerMs" ? 1 : -1 }));
   };
 
   return (
@@ -368,12 +364,8 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
             </td>
             <td className="num board__rating">{entry.rating} <span className="board__plus-minus">±{entry.plusMinus}</span></td>
             <td className="num">{formatUsd(entry.costPerWinUsd)}</td>
-            <td className="num">{formatUsd(entry.costPerAnswerUsd)}</td>
-            <td className="num">{formatUsd(entry.totalCostUsd || null)}</td>
             <td className="num">{entry.matchupWins}–{entry.matchupsPlayed - entry.matchupWins}</td>
-            <td className="num">{entry.answers}</td>
             {visible.has("avgAnswerMs") && <td className="num">{formatMs(entry.avgAnswerMs)}</td>}
-            {visible.has("reasoningTokensPerAnswer") && <td className="num">{formatInt(entry.reasoningTokensPerAnswer)}</td>}
             <td className="num">{entry.games}</td>
           </tr>
         ))}

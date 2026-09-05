@@ -41,7 +41,3 @@
 .frontier-table .frontier-table__status { width: 22px; min-width: 22px; padding-left: 8px; padding-right: 8px; text-align: center; }
 .frontier-table td { white-space: nowrap; }
 .frontier-table td:nth-child(2) { white-space: normal; }
-
-@media (max-width: 720px) {
-  .frontier-table th:nth-child(n+9), .frontier-table td:nth-child(n+9) { display: none; }
-}
