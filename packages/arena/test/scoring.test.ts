@@ -48,6 +48,17 @@ describe("Quiplash 3 scoring", () => {
     expect(scoreMatchup(game).scores).toEqual({ a: 930, b: 85 });
   });
 
+  it.each([
+    [1, [0, 1, 1, 1, 1, 1], 515],
+    [2, [0, 1, 1, 1, 1, 1], 1030],
+    [1, [1, 1, 1, 1, 1, 1], 750],
+    [2, [1, 1, 1, 1, 1, 1], 1500],
+  ] as const)("keeps the full winner bonus for a round %s safety quip", (round, choices, expected) => {
+    const game = matchup(round, votes(...choices));
+    game.answers[1] = { playerId: "b", text: "MAGNETIC SKULL", blank: true };
+    expect(scoreMatchup(game).scores?.b).toBe(expected);
+  });
+
   it("splits the R1/R2 pools by vote share and applies the scaled win bonus", () => {
     expect(scoreMatchup(matchup(1, votes(0, 0, 0, 1))).scores).toEqual({ a: 850, b: 250 });
     expect(scoreMatchup(matchup(2, votes(0, 0, 0, 1))).scores).toEqual({ a: 1_700, b: 500 });

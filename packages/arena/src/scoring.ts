@@ -115,10 +115,13 @@ export function scoreMatchup(matchup: Matchup): Matchup {
   } else {
     // A timed-out safety-quip request is recorded as blank/⁇. Once voting
     // reveals the supplied text, blank remains true to distinguish it from a
-    // model answer. QJZX R1's RESPECT received 85 points for a 17% vote share.
+    // model answer. Only vote-share points are halved; winner bonuses stay whole.
+    // EXZE R2 awarded 1500 for a unanimous safety quip and 1030 for 5/6 votes.
+    const voteShare = apportionedScores(choices, matchup.votes, ROUND_POOLS[matchup.round]);
     for (const answer of matchup.answers) {
       if (answer.blank && answer.text.trim() !== "" && answer.text !== "⁇") {
-        scores[answer.playerId] = Math.floor((scores[answer.playerId] ?? 0) / 2);
+        scores[answer.playerId] = (scores[answer.playerId] ?? 0)
+          - Math.ceil((voteShare[answer.playerId] ?? 0) / 2);
       }
     }
   }
