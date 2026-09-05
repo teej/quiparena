@@ -174,7 +174,8 @@ td.num { font-family: var(--mono); }
 tr:hover td { background: rgb(242 238 231 / 2%); }
 .board tr[data-benched="true"], .board tr[data-unrated="true"] { opacity: 0.42; }
 .board tr[data-benched="true"]:hover, .board tr[data-unrated="true"]:hover { opacity: 0.58; }
-.leaderboard__inference { margin-top: -16px; }
+.leaderboard__method-note { display: grid; margin-top: -16px; }
+.leaderboard__method-note p { grid-area: 1 / 1; }
 .games__date { white-space: nowrap; }
 .status-tag { display: inline-block; padding: 1px 4px; border: 1px solid var(--line); font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .status-tag[data-status="running"] { border-color: var(--accent); color: var(--accent); }

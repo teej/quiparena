@@ -3,11 +3,21 @@ import type { LeaderboardResponse } from "../../../shared/types.js";
 import { useApi } from "../hooks/useApi.js";
 import { POPULATIONS, SHOW_VOTER_CONTROLS, usePopulation } from "../hooks/usePopulation.js";
 
+const RATING_METHODS = [
+  { value: "standard", label: "All votes", description: "Counts every model vote equally, including votes for models from the judge’s own family." },
+  { value: "cross-family", label: "Cross-family", description: "Excludes votes from judges in either contestant’s model family to reduce possible family bias." },
+  { value: "family-balanced", label: "Family-balanced", description: "Gives each judge family equal total weight within a matchup, so families with more judges have no extra influence." },
+] as const;
+
 export function LeaderboardPage() {
   const [params, setParams] = useSearchParams();
-  const view = params.get("view") ?? "standard";
+  const requestedView = params.get("view");
+  const view = RATING_METHODS.find(method => method.value === requestedView)?.value ?? "standard";
   const [population, setPopulation] = usePopulation();
-  const { data, loading, error } = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}&view=${encodeURIComponent(view)}`);
+  const standard = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}&view=standard`);
+  const crossFamily = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}&view=cross-family`);
+  const familyBalanced = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}&view=family-balanced`);
+  const { data, loading, error } = view === "cross-family" ? crossFamily : view === "family-balanced" ? familyBalanced : standard;
   const entries = [...(data?.entries ?? [])].sort((left, right) =>
     Number(right.matchupsPlayed > 0) - Number(left.matchupsPlayed > 0)
     || (left.matchupsPlayed > 0 ? right.rating - left.rating : left.name.localeCompare(right.name)));
@@ -29,10 +39,15 @@ export function LeaderboardPage() {
       </div>
       )}
       <div className="segmented" role="group" aria-label="Rating method">
-        {([["standard", "All votes"], ["cross-family", "Cross-family"], ["family-balanced", "Family-balanced"]] as const).map(([value, label]) =>
-          <button key={value} title={value === "cross-family" ? "Exclude judges from either contestant’s family" : value === "family-balanced" ? "Give each judge family equal weight per matchup" : "Count every vote at its original weight"} aria-pressed={view === value} onClick={() => setParams(previous => { const next = new URLSearchParams(previous); next.set("view", value); return next; })}>{label}</button>)}
+        {RATING_METHODS.map(({ value, label, description }) =>
+          <button key={value} title={description} aria-pressed={view === value} onClick={() => setParams(previous => { const next = new URLSearchParams(previous); next.set("view", value); return next; })}>{label}</button>)}
       </div>
-      {loading && <p className="note">loading</p>}
+      <div className="leaderboard__method-note note" aria-live="polite">
+        {RATING_METHODS.map(({ value, description }) => (
+          <p key={value} aria-hidden={view !== value} style={{ visibility: view === value ? "visible" : "hidden" }}>{description}</p>
+        ))}
+      </div>
+      {loading && !data && <p className="note">loading</p>}
       {error && <p className="note note--error">{error}</p>}
       {data && entries.length === 0 && (
         <p className="note">
@@ -40,7 +55,7 @@ export function LeaderboardPage() {
         </p>
       )}
       {entries.length > 0 && (
-        <table className="board">
+        <table className="board" aria-busy={loading}>
           <thead>
             <tr><th className="num">#</th><th>model</th><th className="num"><span className="board__rating-grid board__rating-head"><span>rating</span></span></th><th className="num">games</th><th className="num">wins</th><th className="num">matchups</th></tr>
           </thead>
