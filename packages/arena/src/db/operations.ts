@@ -1,5 +1,5 @@
 import type { StreamEvent } from "@quiparena/core";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull } from "drizzle-orm";
 
 import { BudgetMissTracker } from "../budget-tracker.js";
 import type {
@@ -10,6 +10,7 @@ import type {
 import { finalizeGameScores } from "../recorder.js";
 import type { RosterModel } from "../registry.js";
 import { placementsFromScores } from "../scoring.js";
+import { scoringSeason } from "./season.js";
 import type { ArenaDatabaseClient } from "./client.js";
 import { events, gamePlayers, games, models, traces } from "./schema.js";
 
@@ -211,12 +212,13 @@ export async function backfillCompletedGameScores(
 export async function loadLobbyHistoryFromDb(
   db: ArenaDatabaseClient,
 ): Promise<LobbyGameHistory[]> {
+  const start = await scoringSeason(db);
   const gameRows = await db.select({
     id: games.id,
     finalScores: games.finalScores,
     observedScores: games.observedScores,
   }).from(games)
-    .where(eq(games.status, "completed"))
+    .where(and(eq(games.status, "completed"), start ? gte(games.startedAt, new Date(start)) : undefined))
     .orderBy(asc(games.startedAt), asc(games.id));
   if (gameRows.length === 0) return [];
 

@@ -79,6 +79,24 @@ describe("Quiplash 3 scoring", () => {
     expect(scoreThriplash(thriplash).scores).toEqual({ a: 3_000, b: 3_000 });
   });
 
+  it("awards the Thriplash pool for a blank opponent without inventing missing votes", () => {
+    const thriplash: Thriplash = {
+      gameId: "GSKR-1788587749561-3",
+      prompt: "Parents",
+      entries: [
+        { playerId: "fable", lines: ["", "", ""], prompt: "Parents" },
+        { playerId: "astra", lines: ["Hamster", "Wi-Fi", "Mattress"], prompt: "Parents" },
+        { playerId: "c", lines: ["c1", "c2", "c3"], prompt: "No captured votes" },
+        { playerId: "d", lines: ["d1", "d2", "d3"], prompt: "No captured votes" },
+        { playerId: "e", lines: ["", "", ""], prompt: "Both blank" },
+        { playerId: "f", lines: [" ", "", ""], prompt: "Both blank" },
+      ],
+      votes: [],
+    };
+    expect(scoreThriplash(thriplash).scores)
+      .toEqual({ fable: 0, astra: 6_000, c: 0, d: 0, e: 0, f: 0 });
+  });
+
   it("totals a game, keeps nested score maps, and shares tied placements", () => {
     const game: Game = {
       id: "g",

@@ -14,6 +14,66 @@ const roster = Array.from({ length: 9 }, (_, index) => ({
 }));
 
 describe("pickNextLobby", () => {
+  const largeRoster = Array.from({ length: 16 }, (_, index) => ({
+    slug: `model/${index}`, enabled: true, fixed: index === 6 || index === 7,
+  }));
+  const previous = {
+    players: Array.from({ length: 8 }, (_, index) => ({ modelSlug: `model/${index}`, placement: index + 1 })),
+  };
+
+  it("keeps two winners, includes two fixed losers, and rotates four fresh models", () => {
+    const roles: string[] = [];
+    const selected = pickNextLobby({ selection: "rotation",
+      roster: largeRoster, history: [], lastGame: previous, rng: () => 0,
+      onPick: (pick) => roles.push(pick.role),
+    }).map((model) => model.slug);
+    expect(selected).toEqual(["model/0", "model/1", "model/6", "model/7", "model/8", "model/9", "model/10", "model/11"]);
+    expect(roles).toEqual(["keeper", "keeper", "fixed", "fixed", "rotation", "rotation", "rotation", "rotation"]);
+  });
+
+  it.each([["model/0", "model/7"], ["model/0", "model/1"]])("frees overlapping winner/fixed seats for rotation: %s, %s", (first, second) => {
+    const roles: string[] = [];
+    const selected = pickNextLobby({ selection: "rotation",
+      roster: largeRoster, history: [], lastGame: previous, fixedModels: [first, second], rng: () => 0,
+      onPick: (pick) => roles.push(pick.role),
+    }).map((model) => model.slug);
+    expect(new Set(selected).size).toBe(8);
+    expect(selected.slice(0, 2)).toEqual(["model/0", "model/1"]);
+    expect(selected).toContain(first);
+    expect(selected).toContain(second);
+    expect(roles.filter((role) => role === "rotation")).toHaveLength(second === "model/1" ? 6 : 5);
+  });
+
+  it("includes fixed models in the first game and allows disabling them", () => {
+    expect(pickNextLobby({ selection: "rotation", roster: largeRoster, history: [], rng: () => 0 }).slice(0, 2).map((model) => model.slug))
+      .toEqual(["model/6", "model/7"]);
+    const roles: string[] = [];
+    pickNextLobby({ selection: "rotation", roster: largeRoster, history: [], fixedModels: [], onPick: (pick) => roles.push(pick.role) });
+    expect(roles).toEqual(Array(8).fill("rotation"));
+  });
+
+  it("replaces disabled or benched fixed models with rotation seats", () => {
+    const selected = pickNextLobby({ selection: "rotation",
+      roster: largeRoster.map((model) => ({ ...model, enabled: model.slug !== "model/6" })),
+      history: [], lastGame: previous, rng: () => 0,
+      benchStates: { "model/7": { benched: true, gamesRemaining: 3, consecutiveSlowGames: 0 } },
+    }).map((model) => model.slug);
+    expect(selected).toHaveLength(8);
+    expect(selected).not.toContain("model/6");
+    expect(selected).not.toContain("model/7");
+  });
+
+  it("fills a small roster without duplicating fixed seats", () => {
+    const selected = pickNextLobby({ selection: "rotation", roster: largeRoster.slice(0, 8), history: [], lastGame: previous });
+    expect(new Set(selected.map((model) => model.slug)).size).toBe(8);
+  });
+
+  it.each([
+    ["model/0", "model/0"], ["model/missing"], ["model/0", "model/1", "model/2"],
+  ])("rejects invalid fixed model lists: %j", (...fixedModels) => {
+    expect(() => pickNextLobby({ selection: "rotation", roster: largeRoster, history: [], fixedModels })).toThrow();
+  });
+
   it("keeps top finishers, rotates without duplicates, favors underplayed models, and excludes benches", () => {
     const lastGame = {
       id: "last",
@@ -35,7 +95,7 @@ describe("pickNextLobby", () => {
       consecutiveSlowGames: 0,
       reason: "too slow",
     }]]);
-    const lobby = pickNextLobby({
+    const lobby = pickNextLobby({ selection: "rotation",
       roster,
       lastGame,
       history,
@@ -54,7 +114,7 @@ describe("pickNextLobby", () => {
   });
 
   it("can disable the bench rule", () => {
-    const lobby = pickNextLobby({
+    const lobby = pickNextLobby({ selection: "rotation",
       roster: roster.slice(0, 4),
       lastGame: null,
       history: [

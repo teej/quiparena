@@ -27,6 +27,7 @@ describe("database schema and migrations", () => {
       `);
       expect(result.rows.map((row) => row.table_name)).toEqual([
         "answers",
+        "arena_settings",
         "events",
         "game_players",
         "games",

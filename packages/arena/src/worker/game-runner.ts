@@ -13,11 +13,12 @@ import {
   type SeatCredentials,
 } from "@quiparena/jackbox";
 
+import { GameContext } from "./game-context.js";
 import { assignDisplayNames } from "../lobby.js";
 import type { RosterModel } from "../registry.js";
 import { scoreMatchup, scoreThriplash, totalScores } from "../scoring.js";
 import { WorkerEventBus } from "./bus.js";
-import { buildModelPlayer, RealGameClient } from "./seat-factory.js";
+import { buildModelPlayer, RealGameClient, playerBindings } from "./seat-factory.js";
 import type { GameClient, Seat } from "./seat.js";
 
 export const DEFAULT_GAME_TIMEOUT_MS = 20 * 60_000;
@@ -239,7 +240,11 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
   const gameId = options.gameId ?? `${roomCode}-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const accumulator = new GameAccumulator(gameId, roomCode);
   const scoreTracker = new GameScoreTracker();
-  const emitScored = (event: AnyEvent): void => bus.emit(scoreTracker.enrich(event));
+  const gameContext = new GameContext(gameId);
+  const emitScored = (event: AnyEvent): void => {
+    gameContext.consume(event);
+    bus.emit(scoreTracker.enrich(event));
+  };
   const harnessAggregator = client.eventsAreAggregated
     ? undefined
     : new GameAggregator({
@@ -316,6 +321,10 @@ export async function runGame(options: RunGameOptions): Promise<Game> {
                 ? {}
                 : { apiKey: process.env["OPENROUTER_API_KEY"] }),
             });
+        const source = player;
+        player = gameContext.wrap(source);
+        const binding = playerBindings.get(source);
+        if (binding) playerBindings.set(player, binding);
         const credential = saved.find((candidate) => (
           candidate.room === roomCode && candidate.name.toLocaleLowerCase() === player.name.toLocaleLowerCase()
         ));

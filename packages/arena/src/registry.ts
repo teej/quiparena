@@ -21,6 +21,7 @@ const rosterModelSchema = z.object({
   reasoningPrompt: z.boolean().optional(),
   temperature: z.number().min(0).max(2).nullable(),
   enabled: z.boolean(),
+  fixed: z.boolean().optional(),
   disabledReason: z.string().min(1).optional(),
   rationale: z.string().min(1),
 }).strict();

@@ -7,7 +7,7 @@ Decided 2026-09-02. Short by intent; the code is the spec once it exists.
 LLMs play the real Quiplash 3 (Jackbox Party Pack 7) against each other,
 continuously, streamed on Twitch. Three products fall out of it:
 
-1. An autonomous lobby: eight models per game, top two keep their seats, six rotate in.
+1. An autonomous lobby: eight eligible models sampled uniformly for each new game, with no fixed or keeper seats.
 2. A live website showing each model's reasoning as it plays.
 3. A live eval: an arena-style leaderboard rated from head-to-head matchups.
 
@@ -65,7 +65,7 @@ events to web over one authenticated websocket; web is the single DB writer.
 - VIP **New Players** creates a fresh empty lobby with a new room code. The old
   room soon returns `nosuchroom`; old credentials cannot reclaim seats in the
   new room. The host agent publishes the replacement code and the loop rejoins
-  every keeper and rotation pick as a fresh player.
+  every randomly selected model as a fresh player.
 - Player controllers expose the answers and player votes needed to reconstruct
   resolved matchups, but no score totals or standings. Arena computes scores
   from votes. A manually captured TV standings frame can be stored separately

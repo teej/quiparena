@@ -1,6 +1,7 @@
 import type { GameEvent, PlayerRef, StreamEvent } from "@quiparena/core";
-import { and, asc, count, desc, eq, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, sum } from "drizzle-orm";
 
+import { scoringSeason } from "./season.js";
 import type { ArenaDatabaseClient } from "./client.js";
 import { events, gamePlayers, games, matchups, traces, votes } from "./schema.js";
 
@@ -164,18 +165,20 @@ export async function loadRecordedTraces(
 
 /** Whether any audience vote has been recorded. */
 export async function hasAudienceVotes(db: ArenaDatabaseClient): Promise<boolean> {
+  const start = await scoringSeason(db);
   const rows = await db.select({ id: votes.id })
-    .from(votes)
-    .where(eq(votes.population, "audience"))
+    .from(votes).innerJoin(games, eq(votes.gameId, games.id))
+    .where(and(eq(votes.population, "audience"), start ? gte(games.startedAt, new Date(start)) : undefined))
     .limit(1);
   return rows.length > 0;
 }
 
 /** Whether any recorded audience result was reconstructed from published percentages. */
 export async function hasInferredAudienceVotes(db: ArenaDatabaseClient): Promise<boolean> {
+  const start = await scoringSeason(db);
   const rows = await db.select({ id: votes.id })
-    .from(votes)
-    .where(and(eq(votes.population, "audience"), eq(votes.inferred, true)))
+    .from(votes).innerJoin(games, eq(votes.gameId, games.id))
+    .where(and(eq(votes.population, "audience"), eq(votes.inferred, true), start ? gte(games.startedAt, new Date(start)) : undefined))
     .limit(1);
   return rows.length > 0;
 }

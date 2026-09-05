@@ -1,5 +1,6 @@
 import { NavLink, Outlet, Route, Routes } from "react-router";
 
+import { ModelPage } from "./pages/ModelPage.js";
 import { GamePage } from "./pages/GamePage.js";
 import { GamesPage } from "./pages/GamesPage.js";
 import { FrontierPage } from "./pages/FrontierPage.js";
@@ -37,6 +38,7 @@ export function App() {
         <Route index element={<LivePage />} />
         <Route path="games" element={<GamesPage />} />
         <Route path="games/:id" element={<GamePage />} />
+        <Route path="models/:slug" element={<ModelPage />} />
         <Route path="leaderboard" element={<LeaderboardPage />} />
         <Route path="frontier" element={<FrontierPage />} />
       </Route>

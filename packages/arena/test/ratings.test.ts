@@ -143,7 +143,8 @@ describe("Bradley-Terry ratings", () => {
         benchReason: "3 budget misses",
         stats: { games: 1, wins: 1, avgPlacement: 1, avgPoints: 4_000 },
       });
-      expect(board[0]!.lower95).toBeLessThan(board[0]!.upper95);
+      // One game is one bootstrap cluster, so this fixture cannot estimate between-game uncertainty.
+      expect(board[0]!.lower95).toBeLessThanOrEqual(board[0]!.upper95);
     } finally {
       await db.close();
     }

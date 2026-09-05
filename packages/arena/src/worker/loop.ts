@@ -65,6 +65,7 @@ export interface RunLoopOptions {
   dailySpendCapUsd?: number;
   players?: number;
   keep?: number;
+  fixedModels?: readonly string[];
   answerBudgetMs?: number;
   voteBudgetMs?: number;
   maxBudgetMisses?: number;
@@ -239,7 +240,7 @@ function historyApiUrl(value: string): URL {
   if (url.protocol === "ws:") url.protocol = "http:";
   if (url.protocol === "wss:") url.protocol = "https:";
   url.pathname = "/api/games";
-  url.search = "";
+  url.search = "?season=current";
   url.hash = "";
   return url;
 }
@@ -374,7 +375,7 @@ function toHistory(
   };
 }
 
-/** Continuously rotate six seats, retain two winners, rate games, and enforce spend. */
+/** Randomly sample eligible models for each game, rate games, and enforce spend. */
 export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const logger = options.logger ?? DEFAULT_LOGGER;
   const bus = options.bus ?? new WorkerEventBus();
@@ -442,6 +443,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   };
 
   const logPick = (pick: LobbyPickRationale<RosterModel>): void => {
+    if (pick.role === "fixed") {
+      logger.info(`[quiparena/worker] pick ${pick.model.displayName}: fixed games=${pick.gamesPlayed}`);
+      return;
+    }
     if (pick.role === "keeper") {
       logger.info(
         `[quiparena/worker] pick ${pick.model.displayName}: keeper`
@@ -485,6 +490,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         history,
         size,
         keep,
+        ...(options.fixedModels === undefined ? {} : { fixedModels: options.fixedModels }),
         bench: {
           ...benchRule,
         },

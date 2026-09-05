@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./db/client.js";
 import { abandonStaleGames, backfillCompletedGameScores } from "./db/operations.js";
@@ -11,6 +11,10 @@ import {
   votes,
 } from "./db/schema.js";
 
+import { currentSeasonGameIds, scoringSeason } from "./db/season.js";
+
+export type RatingView = "standard" | "cross-family" | "family-balanced";
+
 export type RatingPopulation = "player" | "audience" | "blended";
 
 export interface Comparison {
@@ -18,6 +22,11 @@ export interface Comparison {
   loser: string;
   population: "player" | "audience";
   weight: number;
+  gameId?: string;
+  matchupId?: string;
+  judgeFamily?: string;
+  winnerFamily?: string;
+  loserFamily?: string;
 }
 
 export interface BradleyTerryOptions {
@@ -71,7 +80,7 @@ export interface ComputeRatingsOptions extends BradleyTerryOptions {
   now?: Date;
 }
 
-const METHOD = "bradley-terry-mm-ridge-elo-v1";
+const METHOD = "bradley-terry-mm-ridge-game-bootstrap-v2";
 const DEFAULT_RIDGE = 0.5;
 const DEFAULT_TOLERANCE = 1e-9;
 const DEFAULT_MAX_ITERATIONS = 1_000;
@@ -219,12 +228,21 @@ export function fitBradleyTerry(
   const samples = new Map(slugs.map((slug) => [slug, [] as number[]]));
   const rng = options.rng ?? Math.random;
 
+  // Votes within a game share prompts, judges, and history. Resample whole games.
+  const clusters = new Map<string, Comparison[]>();
+  weighted.forEach((comparison, index) => {
+    const key = comparison.gameId ?? `comparison:${index}`;
+    const cluster = clusters.get(key) ?? [];
+    cluster.push(comparison);
+    clusters.set(key, cluster);
+  });
+  const groups = [...clusters.values()];
   if (weighted.length > 0) {
     for (let sample = 0; sample < validated.bootstrapResamples; sample += 1) {
       const resampled = Array.from(
-        { length: weighted.length },
-        () => weighted[randomIndex(weighted.length, rng)]!,
-      );
+        { length: groups.length },
+        () => groups[randomIndex(groups.length, rng)]!,
+      ).flat();
       const estimate = fitPoint(slugs, resampled, validated);
       for (const slug of slugs) samples.get(slug)!.push(estimate.get(slug)?.rating ?? 1_000);
     }
@@ -268,9 +286,10 @@ interface RatedMatchup {
   votes: Array<Pick<Comparison, "population" | "weight"> & { modelSlug: string }>;
 }
 
-async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
+async function readRatingData(db: ArenaDatabaseClient, view: RatingView = "standard"): Promise<RatingData> {
+  const seasonGames = await currentSeasonGameIds(db);
   const [modelRows, gameRows, playerRows, answerRows, voteRows] = await Promise.all([
-    db.select({ slug: models.slug }).from(models),
+    db.select({ slug: models.slug, lab: models.lab, config: models.config }).from(models),
     db.select({ id: games.id, status: games.status }).from(games),
     db.select().from(gamePlayers),
     db.select({
@@ -280,6 +299,8 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
       answerIndex: answers.answerIndex,
     }).from(answers),
     db.select({
+      gameId: votes.gameId,
+      voterId: votes.voterId,
       matchupId: votes.matchupId,
       choice: votes.choice,
       population: votes.population,
@@ -287,9 +308,14 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
     }).from(votes),
   ]);
 
+  const familyBySlug = new Map(modelRows.flatMap(model => {
+    const configured = model.config["family"];
+    const family = (typeof configured === "string" ? configured : model.lab).trim().toLowerCase();
+    return family && family !== "unknown" ? [[model.slug, family] as const] : [];
+  }));
   const modelByPlayer = new Map<string, string>();
   const completedGames = new Set(
-    gameRows.filter((game) => game.status === "completed").map((game) => game.id),
+    gameRows.filter((game) => game.status === "completed" && seasonGames.has(game.id)).map((game) => game.id),
   );
   const gameSets = new Map<string, Set<string>>();
   const wins = new Map<string, number>();
@@ -319,7 +345,7 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
 
   const answerByMatchup = new Map<string, Map<number, string>>();
   for (const answer of answerRows) {
-    if (!answer.matchupId) continue;
+    if (!answer.matchupId || !seasonGames.has(answer.gameId)) continue;
     const slug = modelByPlayer.get(`${answer.gameId}\u0000${answer.playerId}`);
     if (!slug) continue;
     const matchupAnswers = answerByMatchup.get(answer.matchupId) ?? new Map<number, string>();
@@ -334,7 +360,7 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
   const ratedMatchups: RatedMatchup[] = [];
   const votesByMatchup = new Map<string, typeof voteRows>();
   for (const vote of voteRows) {
-    if (!vote.matchupId) continue;
+    if (!vote.matchupId || !seasonGames.has(vote.gameId)) continue;
     const rows = votesByMatchup.get(vote.matchupId) ?? [];
     rows.push(vote);
     votesByMatchup.set(vote.matchupId, rows);
@@ -346,12 +372,22 @@ async function readRatingData(db: ArenaDatabaseClient): Promise<RatingData> {
     const right = answerEntries[1]?.[1];
     if (!left || !right || left === right) continue;
     const matchupVotes: RatedMatchup["votes"] = [];
+    const raw: Comparison[] = [];
     for (const vote of votesByMatchup.get(matchupId) ?? []) {
       const winner = matchupAnswers.get(vote.choice);
       const loser = answerEntries.find(([index]) => index !== vote.choice)?.[1];
       if (!winner || !loser || !Number.isFinite(vote.weight) || vote.weight <= 0) continue;
-      comparisons.push({ winner, loser, population: vote.population, weight: vote.weight });
-      matchupVotes.push({ modelSlug: winner, population: vote.population, weight: vote.weight });
+      const judge = vote.voterId ? modelByPlayer.get(`${vote.gameId}\u0000${vote.voterId}`) : undefined;
+      raw.push({ winner, loser, population: vote.population, weight: vote.weight,
+        gameId: vote.gameId, matchupId,
+        ...(judge && familyBySlug.has(judge) ? { judgeFamily: familyBySlug.get(judge)! } : {}),
+        ...(familyBySlug.has(winner) ? { winnerFamily: familyBySlug.get(winner)! } : {}),
+        ...(familyBySlug.has(loser) ? { loserFamily: familyBySlug.get(loser)! } : {}),
+      });
+    }
+    for (const comparison of adjustJudgeVotes(raw, view)) {
+      comparisons.push(comparison);
+      matchupVotes.push({ modelSlug: comparison.winner, population: comparison.population, weight: comparison.weight });
     }
     ratedMatchups.push({ modelSlugs: [left, right], votes: matchupVotes });
   }
@@ -466,8 +502,9 @@ export async function leaderboard(
   db: ArenaDatabaseClient,
   population: RatingPopulation = "blended",
 ): Promise<LeaderboardEntry[]> {
+  const start = await scoringSeason(db);
   const [snapshot] = await db.select().from(ratingSnapshots)
-    .where(eq(ratingSnapshots.population, population))
+    .where(and(eq(ratingSnapshots.population, population), start ? gte(ratingSnapshots.computedAt, new Date(start)) : undefined))
     .orderBy(desc(ratingSnapshots.computedAt), desc(ratingSnapshots.id))
     .limit(1);
   if (!snapshot || !Array.isArray(snapshot.results)) return [];
@@ -514,4 +551,39 @@ export async function leaderboard(
       computedAt: snapshot.computedAt.toISOString(),
     };
   }).sort((left, right) => right.rating - left.rating || left.modelSlug.localeCompare(right.modelSlug));
+}
+
+/** Filtering is independent of vote outcome: judges related to either contestant are excluded. */
+export function adjustJudgeVotes(comparisons: readonly Comparison[], view: RatingView): Comparison[] {
+  if (view === "standard") return [...comparisons];
+  if (view === "cross-family") return comparisons.filter(c => c.population === "audience"
+    || (c.judgeFamily !== undefined && c.winnerFamily !== undefined && c.loserFamily !== undefined
+      && c.judgeFamily !== c.winnerFamily && c.judgeFamily !== c.loserFamily));
+  const totals = new Map<string, Map<string, number>>();
+  for (const c of comparisons) {
+    if (c.population !== "player" || !c.judgeFamily) continue;
+    const families = totals.get(c.matchupId ?? "matchup") ?? new Map<string, number>();
+    families.set(c.judgeFamily, (families.get(c.judgeFamily) ?? 0) + c.weight);
+    totals.set(c.matchupId ?? "matchup", families);
+  }
+  return comparisons.flatMap(c => {
+    if (c.population === "audience") return [c];
+    if (!c.judgeFamily) return [];
+    const families = totals.get(c.matchupId ?? "matchup")!;
+    const total = [...families.values()].reduce((a, b) => a + b, 0);
+    return [{ ...c, weight: c.weight / families.get(c.judgeFamily)! * total / families.size }];
+  });
+}
+
+/** Alternate analytical views never overwrite the ordinary game scores or rating snapshot. */
+export async function ratingView(db: ArenaDatabaseClient, population: RatingPopulation, view: RatingView): Promise<LeaderboardEntry[]> {
+  if (view === "standard") return leaderboard(db, population);
+  const [data, base] = await Promise.all([readRatingData(db, view), leaderboard(db, population)]);
+  const fit = fitBradleyTerry(data.comparisons, data.modelSlugs, { population,
+    stats: statsForPopulation(data, population, { player: 1, audience: 1 }) });
+  const metadata = new Map(base.map(row => [row.modelSlug, row]));
+  return fit.flatMap(row => {
+    const original = metadata.get(row.modelSlug);
+    return original ? [{ ...original, ...row }] : [];
+  });
 }

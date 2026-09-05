@@ -16,6 +16,8 @@ export interface PlayerContext {
   fieldCount?: number;
   /** Explanation supplied when the game rejected an earlier response. */
   feedback?: string;
+  /** Revealed game history and this player's own prior answers. */
+  gameHistory?: string;
   /** Optional hooks for live streaming of the model's process. */
   onThinking?: (delta: string) => void;
   onDraft?: (text: string) => void;

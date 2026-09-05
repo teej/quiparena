@@ -200,17 +200,17 @@ describe("arena worker", () => {
     expect(result.games).toHaveLength(1);
   });
 
-  it("keeps two finishers and rotates the other seats across fake games", async () => {
+  it("samples fresh rosters across fake games without keeper slots", async () => {
     const entries = roster(8);
     const seen: string[][] = [];
     const result = await runLoop({
       roomCode: "FAKE",
       roster: entries,
       players: 4,
-      keep: 2,
+
       gameClient: new FakeHarness({ playerCount: 4 }),
       playerFactory: scripted,
-      rng: () => 0,
+      rng: () => seen.length === 0 ? 0 : 0.999,
       maxGames: 2,
       logger: quiet,
       onGame: (_game, gameRoster) => {
@@ -219,8 +219,8 @@ describe("arena worker", () => {
     });
     expect(result.reason).toBe("max-games");
     expect(seen).toHaveLength(2);
-    expect(seen[1]?.slice(0, 2)).toEqual(seen[0]?.slice(0, 2));
-    expect(seen[1]?.slice(2)).not.toEqual(expect.arrayContaining(seen[0]?.slice(2) ?? []));
+    expect(seen[0]).toEqual(["test/model-1", "test/model-2", "test/model-3", "test/model-4"]);
+    expect(seen[1]).toEqual(["test/model-8", "test/model-7", "test/model-6", "test/model-5"]);
   });
 
   it("honors a graceful stop request after the current game", async () => {
@@ -318,7 +318,7 @@ describe("arena worker", () => {
     expect(seen[1]).not.toContain("test/model-1");
   });
 
-  it("seeds keepers from the previous process and logs every selection rationale", async () => {
+  it("ignores previous winners when sampling and logs every selection", async () => {
     const entries = roster(6);
     const selected: string[][] = [];
     const messages: string[] = [];
@@ -360,16 +360,16 @@ describe("arena worker", () => {
       },
       onGame: (_game, gameRoster) => selected.push(gameRoster.map((entry) => entry.slug)),
     });
-    expect(selected[0]?.slice(0, 2)).toEqual(["test/model-2", "test/model-3"]);
+    expect(selected[0]?.slice(0, 2)).toEqual(["test/model-1", "test/model-2"]);
     expect(messages.filter((message) => message.includes("[quiparena/worker] pick "))).toHaveLength(3);
-    expect(messages.some((message) => message.includes("keeper placement=1 points=300"))).toBe(true);
-    expect(messages.some((message) => message.includes("rotation games=0 weight=1 sat-out-last-game"))).toBe(true);
+    expect(messages.some((message) => message.includes("keeper placement="))).toBe(false);
+    expect(messages.some((message) => message.includes("rotation games=0 weight=1"))).toBe(true);
   });
 
   it("loads completed history from the ingest web archive API", async () => {
     const fetch = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);
-      if (url.endsWith("/api/games")) {
+      if (url.endsWith("/api/games?season=current")) {
         return Response.json([
           { id: "running", startedAt: "2026-09-02T11:00:00Z", endedAt: null },
           { id: "done", startedAt: "2026-09-02T10:00:00Z", endedAt: "2026-09-02T10:20:00Z" },

@@ -2,6 +2,7 @@ export interface LobbyRosterModel {
   slug: string;
   displayName?: string;
   enabled: boolean;
+  fixed?: boolean | undefined;
 }
 
 export interface LobbyPlayerResult {
@@ -73,6 +74,10 @@ export interface PickNextLobbyOptions<T extends LobbyRosterModel> {
   history: readonly LobbyHistoryEntry[];
   size?: number;
   keep?: number;
+  /** Uniform sampling is the default; legacy rotation is explicitly opt-in. */
+  selection?: "random" | "rotation";
+  /** Overrides roster fixed flags; an empty list disables fixed seats. */
+  fixedModels?: readonly string[];
   bench?: false | Partial<BenchRule>;
   benchStates?: ReadonlyMap<string, ModelBenchState> | Readonly<Record<string, ModelBenchState>>;
   rng?: () => number;
@@ -83,7 +88,7 @@ export interface PickNextLobbyOptions<T extends LobbyRosterModel> {
 
 export interface LobbyPickRationale<T extends LobbyRosterModel> {
   model: T;
-  role: "keeper" | "rotation";
+  role: "keeper" | "fixed" | "rotation";
   gamesPlayed: number;
   weight?: number;
   placement?: number;
@@ -309,12 +314,13 @@ function randomSample(rng: () => number): number {
 }
 
 /**
- * Rotate a lobby without replacement. Returning finishers stay at the front;
- * open seats use a weighted draw that strongly favors underplayed models.
+ * Uniformly sample eligible models without replacement. Legacy weighted rotation
+ * is available only with an explicit selection: "rotation".
  */
 export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobbyOptions<T>): T[] {
   const size = options.size ?? 8;
-  const keep = options.keep ?? 2;
+  const legacyRotation = options.selection === "rotation";
+  const keep = legacyRotation ? options.keep ?? 2 : 0;
   if (!Number.isInteger(size) || size < 1) throw new RangeError("Lobby size must be positive");
   if (!Number.isInteger(keep) || keep < 0 || keep > size) {
     throw new RangeError("keep must be between zero and the lobby size");
@@ -324,6 +330,14 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
   const enabled = allModels.filter((model) => model.enabled);
   const bySlug = new Map(enabled.map((model) => [model.slug, model]));
   if (bySlug.size !== enabled.length) throw new Error("Roster model slugs must be unique");
+  const fixedModels = legacyRotation ? options.fixedModels ?? allModels.filter((model) => model.fixed).map((model) => model.slug) : [];
+  if (new Set(fixedModels).size !== fixedModels.length) throw new Error("Fixed model slugs must be unique");
+  if (fixedModels.length > Math.min(2, size - keep)) {
+    throw new Error("Fixed models must fit alongside keepers, with at most two fixed seats");
+  }
+  for (const slug of fixedModels) {
+    if (!allModels.some((model) => model.slug === slug)) throw new Error(`Unknown fixed model: ${slug}`);
+  }
 
   const history = withLastGame(options.history, options.lastGame);
   const bench = options.bench === false
@@ -340,6 +354,18 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
     throw new Error(`Cannot fill ${size} seats: only ${eligible.length} enabled, non-benched models`);
   }
 
+  if ((options.selection ?? "random") === "random") {
+    const pool = [...eligible];
+    const selected: T[] = [];
+    const rng = options.rng ?? options.random ?? Math.random;
+    while (selected.length < size) {
+      const [model] = pool.splice(Math.floor(randomSample(rng) * pool.length), 1);
+      if (!model) throw new Error("Lobby selection pool was exhausted");
+      selected.push(model);
+      options.onPick?.({ model, role: "rotation", gamesPlayed: 0, weight: 1 });
+    }
+    return selected;
+  }
   const selected: T[] = [];
   const selectedSlugs = new Set<string>();
   const counts = gamesPlayed(history);
@@ -356,6 +382,14 @@ export function pickNextLobby<T extends LobbyRosterModel>(options: PickNextLobby
       ...(finisher.placement === undefined ? {} : { placement: finisher.placement }),
       ...(finisher.score === undefined ? {} : { totalScore: finisher.score }),
     });
+  }
+
+  for (const slug of fixedModels) {
+    const model = bySlug.get(slug);
+    if (!model || benched.has(slug) || selectedSlugs.has(slug)) continue;
+    selected.push(model);
+    selectedSlugs.add(slug);
+    options.onPick?.({ model, role: "fixed", gamesPlayed: counts.get(slug) ?? 0 });
   }
 
   const openSeatCount = size - selected.length;

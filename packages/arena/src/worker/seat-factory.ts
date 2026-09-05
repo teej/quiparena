@@ -23,7 +23,7 @@ import type {
   WorkerRoom,
 } from "./seat.js";
 
-const playerBindings = new WeakMap<Player, (playerId: string) => void>();
+export const playerBindings = new WeakMap<Player, (playerId: string) => void>();
 
 export interface BuildModelPlayerOptions {
   apiKey?: string;

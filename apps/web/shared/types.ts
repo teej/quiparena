@@ -120,7 +120,18 @@ export interface LeaderboardEntry {
   matchupWinRate: number;
 }
 
+export type RatingView = "standard" | "cross-family" | "family-balanced";
+
+export interface ModelHistory {
+  model: { slug: string; name: string; lab: string };
+  offset: number;
+  hasMore: boolean;
+  answers: Array<{ id: string; gameId: string; startedAt: string; round: number; prompt: string; text: string; blank: boolean }>;
+}
+
 export interface LeaderboardResponse {
+  view?: RatingView;
+  seasonStartedAt?: string | null;
   population: LeaderboardPopulation;
   audienceVotingAvailable: boolean;
   audienceVotesInferred: boolean;

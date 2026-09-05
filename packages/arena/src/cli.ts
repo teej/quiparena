@@ -215,6 +215,7 @@ async function runRoster(args: string[]): Promise<void> {
     const status = unknown ? "unknown" : unsupported ? "unsupported" : "ok";
     const benchState = benchStates.get(entry.slug);
     const suffix = [
+      ...(entry.fixed ? ["fixed seat"] : []),
       ...(unsupported ? [unsupported.reasons.join("; ")] : []),
       ...(benchState?.benched
         ? [`BENCHED (${benchState.gamesRemaining} games): ${benchState.reason ?? "automatic runtime bench"}`]

@@ -1,9 +1,12 @@
 import type { GameEvent, StreamEvent } from "@quiparena/core";
 import {
   computeRatings,
+  ratingView,
+  modelHistory,
+  scoringSeason,
+  resetScoringSeason,
   hasAudienceVotes,
   hasInferredAudienceVotes,
-  leaderboard as loadLeaderboard,
   listRecordedGames,
   loadGame,
   loadRecordedEvents,
@@ -20,6 +23,7 @@ import type {
   LeaderboardPopulation,
   LeaderboardResponse,
   LiveState,
+  RatingView,
 } from "../shared/types.js";
 import { liveStateToGame, replayEvents } from "../shared/reducer.js";
 import type { Store } from "./store.js";
@@ -77,7 +81,7 @@ export class DbStore implements Store {
     const replayedGame = liveStateToGame(replayEvents(events));
     const archivedGame = replayedGame === null ? game : {
       ...replayedGame,
-      ...(replayedGame.finalScores !== undefined || game.finalScores === undefined
+      ...(game.finalScores === undefined
         ? {}
         : { finalScores: game.finalScores }),
       ...(game.observedScores === undefined ? {} : { observedScores: game.observedScores }),
@@ -98,9 +102,9 @@ export class DbStore implements Store {
     return { ...replayEvents(events), traces: traceMap(traces) };
   }
 
-  async leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse> {
+  async leaderboard(population: LeaderboardPopulation, view: RatingView = "standard"): Promise<LeaderboardResponse> {
     const [rows, audienceVotingAvailable, audienceVotesInferred] = await Promise.all([
-      loadLeaderboard(this.db, population),
+      ratingView(this.db, population, view),
       hasAudienceVotes(this.db),
       hasInferredAudienceVotes(this.db),
     ]);
@@ -125,7 +129,19 @@ export class DbStore implements Store {
             matchupWinRate: row.stats.matchupWinRate ?? 0,
           };
         });
-    return { population, audienceVotingAvailable, audienceVotesInferred, entries };
+    return { population, view, seasonStartedAt: await scoringSeason(this.db), audienceVotingAvailable, audienceVotesInferred, entries };
+  }
+
+  modelHistory(slug: string, offset = 0) { return modelHistory(this.db, slug, offset); }
+
+  scoringSeason() { return scoringSeason(this.db); }
+
+  async resetScoringSeason(): Promise<string> {
+    if (this.ratingsTimer) { clearTimeout(this.ratingsTimer); this.ratingsTimer = null; }
+    await this.ratingsTail;
+    const startedAt = await resetScoringSeason(this.db);
+    await this.recomputeRatings();
+    return startedAt;
   }
 
   frontier(population: LeaderboardPopulation): Promise<FrontierResponse> {

@@ -43,6 +43,13 @@
       "when": 1788420396720,
       "tag": "0005_organic_bushwacker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788625687430,
+      "tag": "0006_scoring_season",
+      "breakpoints": true
     }
   ]
 }

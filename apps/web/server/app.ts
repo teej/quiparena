@@ -58,7 +58,19 @@ export function createApp(options: AppOptions): Hono {
     });
   });
 
-  app.get("/api/games", async (context) => context.json(await options.store.listGames()));
+  app.get("/api/games", async (context) => {
+    const games = await options.store.listGames();
+    const start = context.req.query("season") === "current" ? await options.store.scoringSeason?.() : null;
+    return context.json(start ? games.filter(game => game.startedAt >= start) : games);
+  });
+
+  app.get("/api/models/:slug", async context => {
+    if (!options.store.modelHistory) return context.json({ error: "Model history requires the database store" }, 503);
+    const raw = Number(context.req.query("offset") ?? 0);
+    const offset = Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
+    const history = await options.store.modelHistory(context.req.param("slug"), offset);
+    return history ? context.json(history) : context.json({ error: "Model not found" }, 404);
+  });
 
   app.get("/api/games/:id", async (context) => {
     const game = await options.store.getGame(context.req.param("id"));
@@ -74,7 +86,9 @@ export function createApp(options: AppOptions): Hono {
     const population: LeaderboardPopulation = requested === "audience" || requested === "blended"
       ? requested
       : "player";
-    return context.json(await options.store.leaderboard(population));
+    const requestedView = context.req.query("view");
+    const view = requestedView === "cross-family" || requestedView === "family-balanced" ? requestedView : "standard";
+    return context.json(await options.store.leaderboard(population, view));
   });
 
   app.get("/api/frontier", async (context) => {
@@ -83,6 +97,16 @@ export function createApp(options: AppOptions): Hono {
       ? requested
       : "player";
     return context.json(await options.store.frontier(population));
+  });
+
+  app.post("/api/admin/ratings/reset", async context => {
+    if (!equalTokens(bearerToken(context.req.header("Authorization")), options.ingestToken)) {
+      return context.json({ error: "Unauthorized" }, 401);
+    }
+    if (!options.store.resetScoringSeason) return context.json({ error: "Reset requires the database store" }, 503);
+    const active = (await options.store.listGames()).some(game => game.status === "running");
+    if (active) return context.json({ error: "Finish the active game before resetting ratings" }, 409);
+    return context.json({ startedAt: await options.store.resetScoringSeason() });
   });
 
   app.post("/api/admin/ratings/recompute", async (context) => {

@@ -8,6 +8,8 @@ import type {
   LeaderboardPopulation,
   LeaderboardResponse,
   LiveState,
+  RatingView,
+  ModelHistory,
 } from "../shared/types.js";
 import { createDemoFixture } from "./demo.js";
 import type { FrontierResponse } from "../shared/frontier.js";
@@ -24,8 +26,11 @@ export interface Store {
   saveEvent(event: GameEvent, traces?: LiveState["traces"]): Promise<void>;
   listGames(): Promise<GameSummary[]>;
   getGame(id: string): Promise<ArchivedGame | null>;
-  leaderboard(population: LeaderboardPopulation): Promise<LeaderboardResponse>;
+  leaderboard(population: LeaderboardPopulation, view?: RatingView): Promise<LeaderboardResponse>;
   frontier(population: LeaderboardPopulation): Promise<FrontierResponse>;
+  modelHistory?(slug: string, offset?: number): Promise<ModelHistory | null>;
+  scoringSeason?(): Promise<string | null>;
+  resetScoringSeason?(): Promise<string>;
   loadLiveState?(): Promise<LiveState>;
 }
 

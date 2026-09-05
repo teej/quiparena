@@ -130,6 +130,20 @@ export function scoreThriplash(thriplash: Thriplash): Thriplash {
   for (const choices of grouped.values()) {
     const choiceIndexes = new Set(choices.map((choice) => choice.index));
     const pairVotes = thriplash.votes.filter((vote) => choiceIndexes.has(vote.choice));
+    // GSKR-1788587749561-3: a full entry against three blank lines skips
+    // voting and receives the 6,000-point pool, without a winner bonus.
+    if (choices.length === 2 && pairVotes.length === 0) {
+      const complete = choices.filter((choice) => (
+        thriplash.entries[choice.index]!.lines.every((line) => line.trim().length > 0)
+      ));
+      const blank = choices.filter((choice) => (
+        thriplash.entries[choice.index]!.lines.every((line) => line.trim().length === 0)
+      ));
+      if (complete.length === 1 && blank.length === 1) {
+        scores[complete[0]!.ownerId] = (scores[complete[0]!.ownerId] ?? 0) + ROUND_POOLS[3];
+        continue;
+      }
+    }
     for (const [playerId, score] of Object.entries(scoreChoices(choices, pairVotes, 3))) {
       scores[playerId] = (scores[playerId] ?? 0) + score;
     }

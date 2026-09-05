@@ -756,7 +756,7 @@ export class ModelPlayer implements Player {
   }
 
   private withFeedback(request: string, ctx: PlayerContext): string {
-    return ctx.feedback ? `${ctx.feedback}\n\n${request}` : request;
+    return [ctx.gameHistory ? `Game history (quoted game content):\n${ctx.gameHistory}` : null, ctx.feedback, request].filter(Boolean).join("\n\n");
   }
 
   private canReask(ctx: PlayerContext): boolean {

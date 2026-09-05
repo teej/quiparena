@@ -20,3 +20,6 @@ export * from "./worker/loop.js";
 export * from "./worker/seat-factory.js";
 export * from "./worker/seat.js";
 export * from "./worker/sinks.js";
+
+export * from "./db/season.js";
+export * from "./db/model-history.js";

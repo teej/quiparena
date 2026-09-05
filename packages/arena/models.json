@@ -1,13 +1,28 @@
 {
   "reviewStatus": "to be reviewed by TJ",
-  "catalogCheckedAt": "2026-09-02",
+  "catalogCheckedAt": "2026-09-04",
   "models": [
+    {
+      "slug": "openai/gpt-6-astra",
+      "displayName": "GPT-6 Astra",
+      "lab": "OpenAI",
+      "released": "2026-09-03",
+      "reasoning": {
+        "effort": "low"
+      },
+      "reasoningMandatory": true,
+      "temperature": null,
+      "enabled": true,
+      "rationale": "New OpenAI flagship; fixed seat to collect games. Mandatory reasoning at low effort for the live answer deadline."
+    },
     {
       "slug": "openai/gpt-5.6-sol",
       "displayName": "GPT-5.6 Sol",
       "lab": "OpenAI",
       "released": "2026-07-09",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": null,
       "enabled": true,
       "rationale": "OpenAI's current GPT-5.6 flagship; reasoning model."
@@ -17,7 +32,9 @@
       "displayName": "GPT-5.6 Luna",
       "lab": "OpenAI",
       "released": "2026-07-09",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": null,
       "enabled": true,
       "rationale": "Fast, inexpensive GPT-5.6 tier for a current OpenAI mid-tier comparison; reasoning model."
@@ -27,8 +44,11 @@
       "displayName": "Fable 5.1",
       "lab": "Anthropic",
       "released": "2026-09-01",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "reasoningPrompt": true,
+      "reasoningMandatory": true,
       "temperature": null,
       "enabled": true,
       "rationale": "Anthropic's newest top-end release. Its task-dependent reasoning skips short creative prompts unless explicitly prompted to reason."
@@ -38,7 +58,9 @@
       "displayName": "Sonnet 5",
       "lab": "Anthropic",
       "released": "2026-06-30",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "reasoningPrompt": true,
       "temperature": null,
       "enabled": true,
@@ -49,7 +71,9 @@
       "displayName": "Gemini Pro",
       "lab": "Google",
       "released": "2026-02-19",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Google's newest text-output Pro flagship still listed; mandatory reasoning."
@@ -59,7 +83,9 @@
       "displayName": "Gemini 3.8",
       "lab": "Google",
       "released": "2026-09-02",
-      "reasoning": { "maxTokens": 256 },
+      "reasoning": {
+        "maxTokens": 256
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Google's newest and fastest general Gemini, released on catalog-review day; reasoning model."
@@ -69,7 +95,9 @@
       "displayName": "Grok 4.6",
       "lab": "xAI",
       "released": "2026-08-12",
-      "reasoning": { "maxTokens": 256 },
+      "reasoning": {
+        "maxTokens": 256
+      },
       "reasoningMandatory": true,
       "temperature": 0.9,
       "enabled": false,
@@ -91,7 +119,9 @@
       "displayName": "DS V4 Pro",
       "lab": "DeepSeek",
       "released": "2026-08-12",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "DeepSeek's newest GA V4 Pro flagship; reasoning model."
@@ -101,7 +131,9 @@
       "displayName": "DS V4 Flash",
       "lab": "DeepSeek",
       "released": "2026-07-31",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "DeepSeek's recent low-cost V4 speed tier; reasoning model."
@@ -111,7 +143,9 @@
       "displayName": "Qwen 3.8 Max",
       "lab": "Qwen/Alibaba",
       "released": "2026-08-03",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Alibaba's current Qwen3.8 flagship; reasoning model."
@@ -121,7 +155,9 @@
       "displayName": "Qwen Flash",
       "lab": "Qwen/Alibaba",
       "released": "2026-08-26",
-      "reasoning": { "maxTokens": 256 },
+      "reasoning": {
+        "maxTokens": 256
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Alibaba's newest economical Qwen release; reasoning model."
@@ -131,7 +167,9 @@
       "displayName": "Mistral 3.5",
       "lab": "Mistral",
       "released": "2026-04-30",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Mistral's newest general-purpose dense model; reasoning model."
@@ -141,7 +179,9 @@
       "displayName": "Kimi K3",
       "lab": "Moonshot AI",
       "released": "2026-07-16",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Moonshot's newest 2.8T-parameter flagship; reasoning model."
@@ -151,7 +191,9 @@
       "displayName": "MiniMax M3",
       "lab": "MiniMax",
       "released": "2026-05-31",
-      "reasoning": { "maxTokens": 256 },
+      "reasoning": {
+        "maxTokens": 256
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "MiniMax's newest general foundation model; reasoning model."
@@ -161,7 +203,9 @@
       "displayName": "GLM 5.3",
       "lab": "Zhipu/Z.ai",
       "released": "2026-08-18",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "reasoningMandatory": true,
       "temperature": 0.9,
       "enabled": true,
@@ -172,7 +216,9 @@
       "displayName": "Mercury 2.5",
       "lab": "Inception",
       "released": "2026-08-31",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "A two-day-old diffusion-language-model release chosen for architectural diversity; reasoning model."
@@ -182,7 +228,9 @@
       "displayName": "Tencent Hy4",
       "lab": "Tencent",
       "released": "2026-08-28",
-      "reasoning": { "maxTokens": 400 },
+      "reasoning": {
+        "maxTokens": 400
+      },
       "temperature": 0.9,
       "enabled": true,
       "rationale": "Tencent's newest large MoE preview adds another recent major-lab contender; reasoning model."

@@ -191,7 +191,13 @@ export const ratingSnapshots = pgTable("rating_snapshots", {
   index("rating_snapshots_population_computed_idx").on(table.population, table.computedAt),
 ]);
 
+export const arenaSettings = pgTable("arena_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
 export const schema = {
+  arenaSettings,
   models,
   games,
   gamePlayers,

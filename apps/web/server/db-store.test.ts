@@ -40,6 +40,24 @@ async function waitFor<T>(read: () => Promise<T | null>, timeoutMs = 15_000): Pr
 }
 
 describe("DbStore web integration", () => {
+  it("shows corrected persisted scores instead of stale game-ended event scores", async () => {
+    db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    dbStore = new DbStore(db);
+    const at = "2026-09-05T06:09:30.553Z";
+    await dbStore.saveEvent({ type: "game.created", gameId: "corrected", roomCode: "GSKR", at });
+    await dbStore.saveEvent({
+      type: "player.joined", gameId: "corrected", at,
+      player: { id: "astra", name: "GPT-6 Astra", modelId: "openai/gpt-6-astra" },
+    });
+    await dbStore.saveEvent({ type: "game.ended", gameId: "corrected", finalScores: { astra: 0 }, at });
+    await dbStore.close();
+    await db.update(games).set({ finalScores: { astra: 6_000 } });
+    const archive = await dbStore.getGame("corrected");
+    expect(archive?.game.finalScores).toEqual({ astra: 6_000 });
+    expect(archive?.events.find((event) => event.type === "game.ended"))
+      .toMatchObject({ finalScores: { astra: 0 } });
+  });
+
   it("round-trips a full ingest through PGlite and refreshes the leaderboard", async () => {
     db = await openDb({ databaseUrl: null, dataDir: "memory://" });
     dbStore = new DbStore(db, {
@@ -76,7 +94,15 @@ describe("DbStore web integration", () => {
       const candidate = await response.json() as ArchivedGame;
       return candidate.game.endedAt ? candidate : null;
     });
-    expect(archive).toEqual(fixture.archive);
+    expect(archive).toEqual({
+      ...fixture.archive,
+      game: {
+        ...fixture.archive.game,
+        // The DB scorer includes vote-share rounding and winner bonuses;
+        // demo game-ended events carry their older simplified totals.
+        finalScores: { p1: 1550, p2: 1110, p3: 950, p4: 1710, p5: 1440, p6: 2320, p7: 1780, p8: 1780 },
+      },
+    });
 
     const observedWinner = [...fixture.archive.game.players]
       .sort((left, right) => (fixture.archive.game.finalScores?.[left.id] ?? 0)
@@ -197,5 +223,37 @@ describe("DbStore web integration", () => {
         })],
       },
     });
+  });
+});
+
+describe("fresh scoring seasons and model history", () => {
+  it("resets ratings and benches while retaining answers and archives, including after recompute", async () => {
+    db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    dbStore = new DbStore(db, { computeRatingsOptions: { bootstrapResamples: 0 } });
+    const fixture = createDemoFixture(314159);
+    for (const event of fixture.archive.events) await dbStore.saveEvent(event);
+    await dbStore.recomputeRatings();
+    service = createQuipArenaServer({ ingestToken: "test-reset", store: dbStore });
+    const before = await dbStore.leaderboard("player");
+    const model = before.entries.find(e => e.matchupsPlayed > 0)!;
+    expect(model).toBeDefined();
+    const historyUrl = `/api/models/${encodeURIComponent(model.modelId)}`;
+    const response = await service.app.request(historyUrl);
+    expect(response.status).toBe(200);
+    const oldHistory = await response.json() as { answers: unknown[] };
+    expect(oldHistory.answers.length).toBeGreaterThan(0);
+    expect((await service.app.request("/api/admin/ratings/reset", { method: "POST" })).status).toBe(401);
+    const reset = await service.app.request("/api/admin/ratings/reset", { method: "POST", headers: { Authorization: "Bearer test-reset" } });
+    expect(reset.status).toBe(200);
+    await dbStore.recomputeRatings();
+    for (const view of ["standard", "cross-family", "family-balanced"] as const) {
+      const board = await dbStore.leaderboard("player", view);
+      expect(board.entries.every(e => e.games === 0 && e.wins === 0 && e.matchupsPlayed === 0 && !e.benched)).toBe(true);
+    }
+    expect(await (await service.app.request(historyUrl)).json()).toEqual(oldHistory);
+    expect(await dbStore.getGame(fixture.archive.game.id)).not.toBeNull();
+    expect(await (await service.app.request("/api/games?season=current")).json()).toEqual([]);
+    const frontier = await dbStore.frontier("player");
+    expect(frontier.entries.every(e => e.answers === 0 && e.totalCostUsd === 0)).toBe(true);
   });
 });
