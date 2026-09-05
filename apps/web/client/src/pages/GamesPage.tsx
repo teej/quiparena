@@ -25,18 +25,18 @@ export function GamesPage() {
       {games && games.length > 0 && (
         <table className="games">
           <thead>
-            <tr><th>started</th><th>room</th><th>status</th><th>winner</th><th className="num">matchups</th><th className="num">top score</th><th className="num">model cost</th></tr>
+            <tr><th>room</th><th>status</th><th>winner</th><th className="num">players</th><th className="num">top score</th><th className="num">model cost</th><th>started</th></tr>
           </thead>
           <tbody>
             {games.map((game) => (
               <tr key={game.id} data-status={game.status}>
-                <td className="games__date"><Link to={`/games/${game.id}`}>{formatDate(game.startedAt)}</Link></td>
-                <td className="mono">{game.roomCode}</td>
+                <td className="mono"><Link to={`/games/${encodeURIComponent(game.id)}`}>{game.roomCode}</Link></td>
                 <td><span className="status-tag" data-status={game.status}>{game.status}</span></td>
-                <td>{game.winner ? <strong>{game.winner.name}</strong> : <span className="dim">no scores</span>}</td>
-                <td className="num">{game.matchupCount}</td>
+                <td>{game.winner ? <strong>{game.winner.name}</strong> : <span className="dim">–</span>}</td>
+                <td className="num">{game.playerCount}</td>
                 <td className="num">{game.topScore === null ? "–" : formatScore(game.topScore)}</td>
                 <td className="num">{formatCost(game.totalCostUsd)}</td>
+                <td className="games__date">{formatDate(game.startedAt)}</td>
               </tr>
             ))}
           </tbody>

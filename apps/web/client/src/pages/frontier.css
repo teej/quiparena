@@ -13,7 +13,7 @@
 .frontier__label { pointer-events: none; paint-order: stroke; stroke: var(--night); stroke-width: 4px; stroke-linejoin: round; }
 .frontier__leader { stroke: var(--dim); stroke-width: 1; }
 .frontier__label--frontier { fill: var(--ink); }
-.frontier__mark { cursor: pointer; outline: 0; }
+.frontier__mark { cursor: default; outline: 0; }
 .frontier__hit { fill: transparent; }
 .frontier__dot { fill: var(--dim); stroke: var(--night); stroke-width: 2; transition: fill var(--ease), stroke var(--ease); }
 .frontier__mark--frontier .frontier__dot { fill: var(--accent); }
