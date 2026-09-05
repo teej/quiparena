@@ -8,7 +8,9 @@ export function LeaderboardPage() {
   const view = params.get("view") ?? "standard";
   const [population, setPopulation] = usePopulation();
   const { data, loading, error } = useApi<LeaderboardResponse>(`/api/leaderboard?population=${population}&view=${encodeURIComponent(view)}`);
-  const entries = data?.entries ?? [];
+  const entries = [...(data?.entries ?? [])].sort((left, right) =>
+    Number(right.matchupsPlayed > 0) - Number(left.matchupsPlayed > 0)
+    || (left.matchupsPlayed > 0 ? right.rating - left.rating : left.name.localeCompare(right.name)));
 
   return (
     <div className="page">
@@ -57,14 +59,15 @@ export function LeaderboardPage() {
                 <tr
                   key={entry.modelId}
                   data-benched={entry.benched}
+                  data-unrated={entry.matchupsPlayed === 0}
                   title={entry.benched ? entry.benchReason ?? "benched" : undefined}
                 >
-                  <td className="num dim">{index + 1}</td>
+                  <td className="num dim">{entry.matchupsPlayed > 0 ? index + 1 : "—"}</td>
                   <td><Link to={`/models/${encodeURIComponent(entry.modelId)}`}><strong>{entry.name}</strong></Link><span className="board__id">{entry.modelId}</span></td>
-                  <td className="num board__rating" title={`95% bootstrap interval: ${entry.intervalLow}–${entry.intervalHigh}`}>
+                  <td className="num board__rating" title={entry.matchupsPlayed === 0 ? undefined : entry.games < 2 ? "At least two games are needed to estimate uncertainty" : `95% bootstrap interval: ${entry.intervalLow}–${entry.intervalHigh}`}>
                     <span className="board__rating-grid">
                       <span className="board__rating-value">{entry.matchupsPlayed === 0 ? "—" : entry.rating}</span>
-                      <span className="board__plus-minus">{entry.matchupsPlayed === 0 ? "unrated" : entry.games < 2 ? "need ≥2 games" : `±${plusMinus}`}</span>
+                      {entry.matchupsPlayed > 0 && entry.games >= 2 && <span className="board__plus-minus">±{plusMinus}</span>}
                     </span>
                   </td>
                   <td className="num">{entry.games}</td>

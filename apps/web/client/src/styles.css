@@ -172,8 +172,8 @@ th { text-align: left; font-weight: 400; padding: 6px 8px 8px; border-bottom: 1p
 td { padding: 8px; border-bottom: 1px solid var(--line-soft); vertical-align: baseline; }
 td.num { font-family: var(--mono); }
 tr:hover td { background: rgb(242 238 231 / 2%); }
-.board tr[data-benched="true"] { opacity: 0.42; }
-.board tr[data-benched="true"]:hover { opacity: 0.58; }
+.board tr[data-benched="true"], .board tr[data-unrated="true"] { opacity: 0.42; }
+.board tr[data-benched="true"]:hover, .board tr[data-unrated="true"]:hover { opacity: 0.58; }
 .leaderboard__inference { margin-top: -16px; }
 .games__date { white-space: nowrap; }
 .status-tag { display: inline-block; padding: 1px 4px; border: 1px solid var(--line); font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
@@ -200,10 +200,10 @@ tr[data-status="abandoned"] td { color: var(--dim); }
 .replay__head { display: flex; gap: 14px; align-items: baseline; }
 .replay__number { color: var(--dim); }
 .replay__prompt { font-size: 18px; font-weight: 400; line-height: 1.25; }
-.replay__answers { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.replay__answers { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .replay__answers .option { border-top: 1px solid var(--line); }
-.option--replay { display: block; border: 1px solid var(--line); padding: 0; }
-.option--replay > summary, .option--replay > section, section.option--replay { display: grid; grid-template-columns: auto 1fr auto; gap: 0 14px; align-items: baseline; padding: 10px 12px; }
+.option--replay { display: block; min-width: 0; border: 1px solid var(--line); padding: 0; }
+.option--replay > summary, .option--replay > section, section.option--replay { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0 14px; align-items: baseline; padding: 10px 12px; }
 section.option--replay { padding: 10px 12px; }
 .option--replay > summary { cursor: default; list-style: none; }
 .option--replay > summary::-webkit-details-marker { display: none; }
@@ -213,7 +213,12 @@ section.option--replay { padding: 10px 12px; }
 .option--replay .option__tally { font-size: 22px; }
 .option--replay .option__tally[data-trace="true"]::before { content: "▸ "; font-size: 11px; font-weight: 400; color: var(--dim); vertical-align: 4px; }
 .option--replay[open] .option__tally[data-trace="true"]::before { content: "▾ "; }
+.option--replay .option__meta { flex-wrap: wrap; row-gap: 3px; }
 .option--replay .option__votes { white-space: normal; }
+.option--replay .option__voter-list { gap: 3px 8px; color: var(--dim); margin-top: 3px; }
+.option__voter { white-space: nowrap; }
+.option--replay .option__text { overflow-wrap: anywhere; }
+.option--replay .option__timing { white-space: normal; overflow-wrap: anywhere; }
 .option__timing, .trace__timing { color: var(--dim); font-size: 10px; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
 .option__timing { white-space: nowrap; }
 .trace__timing { margin-left: 10px; }

@@ -52,10 +52,11 @@ function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
       <span className="option__letter">{letter}</span>
       <div className="option__body">
         <p className="option__text">{text}</p>
-        <p className="option__meta">
-          <span className="option__author">{author}</span>
-          {annotation && <span className="option__timing">{annotation}</span>}
-          <span className="option__votes">{voters.length ? voters.join(", ") : "—"}</span>
+        <p className="option__meta"><span className="option__author">{author}</span></p>
+        {annotation && <p className="option__timing">{annotation}</p>}
+        <p className="option__meta option__voter-list">
+          <span>voted by</span>
+          {voters.length ? voters.map((voter, index) => <span className="option__voter" key={`${voter}-${index}`}>{voter}{index < voters.length - 1 ? "," : ""}</span>) : <span>—</span>}
         </p>
       </div>
       <span className="option__tally" data-trace={hasTrace}>{tally}</span>
