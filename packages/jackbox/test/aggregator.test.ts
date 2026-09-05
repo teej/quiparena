@@ -324,3 +324,22 @@ it("reveals skipped-vote matchups at the next round, never during answer writing
   expect(events[0]).toMatchObject({ matchup: { prompt: "Where to cry", votes: [] } });
   expect(aggregator.ingest({ type: "round.started", gameId: "skip", round: 2, at })).toEqual([]);
 });
+
+
+it.each([false, true])("preserves answer ownership when a safety quip is presented first=%s", (fallbackFirst) => {
+  const emitted: GameEvent[] = [];
+  const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 3, onEvent: event => emitted.push(event) });
+  add(aggregator, answer("p1", 2, "Doll says", "I'm a real boy now dad"));
+  const fallback = answer("p2", 2, "Doll says", "⁇");
+  if (fallback.type !== "answer.submitted") throw new Error("Expected submission");
+  add(aggregator, { ...fallback, blank: true });
+  const options = fallbackFirst ? ["I DON'T WANT TO GO", "I'M A REAL BOY NOW DAD"] : ["I'M A REAL BOY NOW DAD", "I DON'T WANT TO GO"];
+  add(aggregator, voteRequest("p3", 2, "Doll says", options));
+  add(aggregator, voteCast("p3", 2, "Doll says", fallbackFirst ? 1 : 0, "0", "I'M A REAL BOY NOW DAD"));
+  const resolved = emitted.find(event => event.type === "matchup.resolved");
+  expect(resolved?.type).toBe("matchup.resolved");
+  if (resolved?.type !== "matchup.resolved") return;
+  expect(resolved.matchup.answers.find(answer => answer.playerId === "p1")).toMatchObject({ text: "I'm a real boy now dad", blank: false });
+  expect(resolved.matchup.answers.find(answer => answer.playerId === "p2")).toMatchObject({ text: "I DON'T WANT TO GO", blank: true });
+  expect(resolved.matchup.answers[resolved.matchup.votes[0]!.choice]!.playerId).toBe("p1");
+});

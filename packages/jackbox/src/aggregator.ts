@@ -297,18 +297,19 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
     if (!presentation || presentation.options.length !== 2) return tuple2(owned);
 
     const remaining = [...owned];
-    const ordered: Answer[] = [];
-    for (const option of presentation.options) {
+    // Reserve exact matches before assigning game-generated fallback text.
+    // A fallback shown first must not take the other answer's owner.
+    const ordered = presentation.options.map((option): Answer | undefined => {
       const index = remaining.findIndex((answer) => normalized(answer.text) === normalized(option));
-      if (index >= 0) {
-        const [matched] = remaining.splice(index, 1);
-        if (matched) ordered.push(matched);
-      } else {
-        const unmatched = remaining.shift();
-        if (unmatched) ordered.push({ ...unmatched, text: option });
-      }
+      return index >= 0 ? remaining.splice(index, 1)[0] : undefined;
+    });
+    for (const [index, option] of presentation.options.entries()) {
+      if (ordered[index]) continue;
+      const unmatched = remaining.shift();
+      if (unmatched) ordered[index] = { ...unmatched, text: option };
     }
-    return ordered.length === 2 ? tuple2(ordered) : tuple2(owned);
+    return ordered.length === 2 && ordered.every((answer): answer is Answer => answer !== undefined)
+      ? tuple2(ordered) : tuple2(owned);
   }
 
   #buildThriplash(accumulator: ThriplashAccumulator): Thriplash {
