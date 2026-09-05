@@ -13,7 +13,6 @@ export function ModelPage() {
       <Link to="/leaderboard">← Leaderboard</Link>
       <h1>{data?.model.name ?? "Model history"}</h1>
       <p>{data?.model.slug ?? slug}</p>
-      <p>Saved answers from every scoring season, newest games first.</p>
     </header>
     {loading && <p className="note">Loading answers…</p>}
     {error && <p className="note note--error">{error}</p>}

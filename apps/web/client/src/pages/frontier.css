@@ -37,10 +37,11 @@
 .frontier-table th button { font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; white-space: nowrap; }
 .frontier-table th button:hover, .frontier-table th button[data-active="true"] { color: var(--ink); }
 .frontier-table th.num button { text-align: right; }
-.frontier__flag { display: inline-block; width: 6px; height: 6px; margin-right: 7px; vertical-align: 1px; background: var(--accent); }
+.frontier__flag { display: inline-block; width: 6px; height: 6px; vertical-align: middle; background: var(--accent); }
+.frontier-table .frontier-table__status { width: 22px; min-width: 22px; padding-left: 8px; padding-right: 8px; text-align: center; }
 .frontier-table td { white-space: nowrap; }
-.frontier-table td:first-child { white-space: normal; }
+.frontier-table td:nth-child(2) { white-space: normal; }
 
 @media (max-width: 720px) {
-  .frontier-table th:nth-child(n+8), .frontier-table td:nth-child(n+8) { display: none; }
+  .frontier-table th:nth-child(n+9), .frontier-table td:nth-child(n+9) { display: none; }
 }

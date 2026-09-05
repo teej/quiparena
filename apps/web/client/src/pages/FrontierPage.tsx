@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { FrontierEntry, FrontierResponse } from "../../../shared/frontier.js";
 import { useApi } from "../hooks/useApi.js";
-import { POPULATIONS, usePopulation } from "../hooks/usePopulation.js";
+import { POPULATIONS, SHOW_VOTER_CONTROLS, usePopulation } from "../hooks/usePopulation.js";
 import "./frontier.css";
 
 /* ------------------------------------------------------------------ format */
 
 export function formatUsd(value: number | null): string {
-  if (value === null) return "–";
+  if (value === null || !Number.isFinite(value)) return "–";
+  if (value === 0) return "$0.00";
+  if (value > 0 && value < 0.001) return "< $0.001";
   if (value >= 1) return `$${value.toFixed(2)}`;
   const decimals = Math.min(7, Math.max(2, -Math.floor(Math.log10(value)) + 1));
   const text = value.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, ".0");
@@ -344,6 +346,7 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
     <table className="board frontier-table">
       <thead>
         <tr>
+          <th className="frontier-table__status" aria-label="On the frontier" />
           {columns.map((column) => (
             <th key={column.key} className={column.numeric ? "num" : ""} aria-sort={sort.key === column.key ? (sort.direction === 1 ? "ascending" : "descending") : "none"}>
               <button type="button" onClick={() => toggle(column.key)} data-active={sort.key === column.key}>
@@ -356,8 +359,11 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
       <tbody>
         {sorted.map((entry) => (
           <tr key={entry.slug} data-frontier={frontier.has(entry.slug)}>
+            <td className="frontier-table__status">
+              {frontier.has(entry.slug) && <i className="frontier__flag" aria-label="on the frontier" />}
+            </td>
             <td>
-              <strong>{frontier.has(entry.slug) && <i className="frontier__flag" aria-label="on the frontier" />}{entry.displayName}</strong>
+              <strong>{entry.displayName}</strong>
               <span className="board__id">{entry.slug}</span>
             </td>
             <td className="num board__rating">{entry.rating} <span className="board__plus-minus">±{entry.plusMinus}</span></td>
@@ -384,41 +390,31 @@ export function FrontierPage() {
   const entries = data?.entries ?? [];
   const frontier = useMemo(() => paretoFrontier(entries), [entries]);
   const plotted = entries.filter((entry) => entry.costPerWinUsd !== null && entry.costPerWinUsd > 0).length;
-  const unpriced = entries.filter((entry) => entry.costPerWinUsd === null && entry.matchupWins > 0).length;
-  const maxGames = entries.reduce((most, entry) => Math.max(most, entry.games), 0);
 
   return (
     <div className="page frontier">
       <header className="page__head">
         <h1>Frontier</h1>
         <p>
-          Everything a model spent, divided by the matchups it won on a majority vote, against its leaderboard rating: up and left is the good corner.
+          Rating against cost per winning answer.
         </p>
       </header>
+      {SHOW_VOTER_CONTROLS && (
       <div className="segmented" role="group" aria-label="Whose votes">
         <span className="segmented__label">voters</span>
         {POPULATIONS.map(([value, label]) => (
           <button type="button" aria-pressed={population === value} onClick={() => setPopulation(value)} key={value}>{label}</button>
         ))}
       </div>
+      )}
       {loading && <p className="note">loading</p>}
       {error && <p className="note note--error">{error}</p>}
       {data && entries.length === 0 && (
         <p className="note">
-          {population === "player" ? "No rated matchups yet." : "Chat voting is not wired up yet, so there is nothing to rate here."}
+          No results.
         </p>
-      )}
-      {entries.length > 0 && plotted < 2 && (
-        <p className="note">Not enough priced wins to draw a frontier yet. Table only.</p>
       )}
       {plotted >= 2 && <FrontierChart entries={entries} frontier={frontier} />}
-      {entries.length > 0 && (plotted >= 2 && (unpriced > 0 || maxGames < 5)) && (
-        <p className="note frontier__note">
-          {maxGames < 5 ? `Early: no model has more than ${maxGames} game${maxGames === 1 ? "" : "s"} yet.` : ""}
-          {maxGames < 5 && unpriced > 0 ? " / " : ""}
-          {unpriced > 0 ? `${unpriced} model${unpriced === 1 ? "" : "s"} report no price and sit in the table only.` : ""}
-        </p>
-      )}
       {entries.length > 0 && <FrontierTable entries={entries} frontier={frontier} />}
     </div>
   );

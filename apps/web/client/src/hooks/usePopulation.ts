@@ -3,6 +3,8 @@ import { useState } from "react";
 import type { LeaderboardPopulation } from "../../../shared/types.js";
 
 /** The voter toggle shared by the leaderboard and the frontier: models / chat / both. */
+export const SHOW_VOTER_CONTROLS = false;
+
 export const POPULATIONS: ReadonlyArray<readonly [LeaderboardPopulation, string]> = [
   ["player", "models"],
   ["audience", "chat"],
@@ -31,5 +33,5 @@ export function usePopulation(): [LeaderboardPopulation, (next: LeaderboardPopul
       // ignore
     }
   };
-  return [population, update];
+  return [SHOW_VOTER_CONTROLS ? population : "player", update];
 }
