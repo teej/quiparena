@@ -1,4 +1,4 @@
-import { eq, gte } from "drizzle-orm";
+import { eq, gte, like } from "drizzle-orm";
 import type { ArenaDatabaseClient } from "./client.js";
 import { arenaSettings, games, models } from "./schema.js";
 
@@ -22,5 +22,8 @@ export async function currentSeasonGameIds(db: ArenaDatabaseClient): Promise<Set
   const start = await scoringSeason(db);
   const rows = await db.select({ id: games.id }).from(games)
     .where(start ? gte(games.startedAt, new Date(start)) : undefined);
-  return new Set(rows.map(r => r.id));
+  const excluded = await db.select({ key: arenaSettings.key }).from(arenaSettings)
+    .where(like(arenaSettings.key, "scoring-excluded-game:%"));
+  const excludedIds = new Set(excluded.map(row => row.key.slice("scoring-excluded-game:".length)));
+  return new Set(rows.filter(row => !excludedIds.has(row.id)).map(row => row.id));
 }
