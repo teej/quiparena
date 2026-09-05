@@ -310,3 +310,17 @@ function voteCast(
     at,
   };
 }
+
+it("reveals skipped-vote matchups at the next round, never during answer writing", () => {
+  const aggregator = new GameAggregator({ gameId: "skip", expectedPlayerCount: 8 });
+  aggregator.ingest({ type: "round.started", gameId: "skip", round: 1, at });
+  for (const [playerId, answer] of [["1", "Self-checkout"], ["2", ""]]) {
+    const emitted = aggregator.ingest({ type: "answer.submitted", gameId: "skip", round: 1,
+      playerId: playerId!, answer: answer!, prompt: "Where to cry", blank: answer === "", latencyMs: 1, at });
+    expect(emitted.some(e => e.type === "matchup.resolved")).toBe(false);
+  }
+  const events = aggregator.ingest({ type: "round.started", gameId: "skip", round: 2, at });
+  expect(events.map(e => e.type)).toEqual(["matchup.resolved", "round.started"]);
+  expect(events[0]).toMatchObject({ matchup: { prompt: "Where to cry", votes: [] } });
+  expect(aggregator.ingest({ type: "round.started", gameId: "skip", round: 2, at })).toEqual([]);
+});

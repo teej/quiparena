@@ -102,6 +102,9 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
         break;
       case "round.started":
         if (!this.#rounds.has(event.round)) {
+          // Skipped voting (e.g. an empty answer) still becomes public when the
+          // next round starts. Resolve it before building the next request's history.
+          if (event.round > 1) this.#flushResolved(event.at, emitted, true, true);
           this.#rounds.add(event.round);
           this.#push(event, emitted);
         }
@@ -229,7 +232,7 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
     return this.#thriplash;
   }
 
-  #flushResolved(at: string, emitted: GameEvent[], force: boolean): void {
+  #flushResolved(at: string, emitted: GameEvent[], force: boolean, normalOnly = false): void {
     const playerCount = this.#options.expectedPlayerCount ?? this.#players.size;
     for (const accumulator of this.#normal.values()) {
       if (accumulator.emitted || accumulator.answers.size !== 2) continue;
@@ -240,6 +243,7 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
       this.#push({ type: "matchup.resolved", gameId: this.gameId, matchup, at }, emitted);
     }
 
+    if (normalOnly) return;
     const final = this.#thriplash;
     if (!final || final.emitted || final.entries.size === 0) return;
     const groupSizes = new Map<string, number>();
