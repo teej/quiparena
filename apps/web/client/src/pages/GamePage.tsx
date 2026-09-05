@@ -86,7 +86,7 @@ function MatchupReplay({ matchup, data, number }: { matchup: Matchup; data: Arch
           <AnswerCard
             key={answer.playerId}
             letter={LETTERS[choice] ?? "?"}
-            text={answer.blank ? "no answer" : answer.text}
+            text={answer.blank && (!answer.text || answer.text === "⁇") ? "no answer" : answer.text}
             author={nameOf(answer.playerId)}
             voters={playerVotes.filter((vote) => vote.choice === choice).map((vote) => nameOf(vote.voterId))}
             tally={tallies[choice] ?? 0}

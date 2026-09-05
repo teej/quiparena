@@ -32,6 +32,22 @@ function matchup(round: 1 | 2, gameVotes: Vote[]): Matchup {
 }
 
 describe("Quiplash 3 scoring", () => {
+  it("awards the round pool for an automatic win against a truly empty answer", () => {
+    for (const round of [1, 2] as const) {
+      const game = matchup(round, []);
+      game.answers[1] = { playerId: "b", text: "", blank: true };
+      expect(scoreMatchup(game).scores).toEqual({ a: round * 1000, b: 0 });
+      game.answers[1] = { playerId: "b", text: "⁇", blank: true };
+      expect(scoreMatchup(game).scores).toEqual({ a: 0, b: 0 });
+    }
+  });
+
+  it("halves the points for the observed game-provided safety answer", () => {
+    const game = matchup(1, votes(0, 0, 0, 0, 0, 1));
+    game.answers[1] = { playerId: "b", text: "RESPECT", blank: true };
+    expect(scoreMatchup(game).scores).toEqual({ a: 930, b: 85 });
+  });
+
   it("splits the R1/R2 pools by vote share and applies the scaled win bonus", () => {
     expect(scoreMatchup(matchup(1, votes(0, 0, 0, 1))).scores).toEqual({ a: 850, b: 250 });
     expect(scoreMatchup(matchup(2, votes(0, 0, 0, 1))).scores).toEqual({ a: 1_700, b: 500 });

@@ -21,8 +21,8 @@ export function ModelPage() {
     {data?.answers.map(answer => <article className="replay" key={answer.id}>
       <header className="replay__head"><h2 className="replay__prompt">{answer.prompt}</h2></header>
       <div className="option option--replay"><div className="option__body">
-        <p className="option__text" style={{ whiteSpace: "pre-line" }}>{answer.blank ? "No answer submitted" : answer.text}</p>
-        <p className="option__meta"><Link to={`/games/${encodeURIComponent(answer.gameId)}`}>{formatDate(answer.startedAt)} · Round {answer.round} · View game ↗</Link></p>
+        <p className="option__text" style={{ whiteSpace: "pre-line" }}>{answer.text && answer.text !== "⁇" ? answer.text : "No answer submitted"}</p>
+        <p className="option__meta">{answer.blank && answer.text && answer.text !== "⁇" && <span>Game-provided fallback · </span>}<Link to={`/games/${encodeURIComponent(answer.gameId)}`}>{formatDate(answer.startedAt)} · Round {answer.round} · View game ↗</Link></p>
       </div></div>
     </article>)}
     <div className="segmented" role="group" aria-label="Answer history pages">

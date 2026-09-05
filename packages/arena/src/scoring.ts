@@ -106,7 +106,23 @@ export function scoreMatchup(matchup: Matchup): Matchup {
     ownerId: answer.playerId,
     index,
   }));
-  return { ...matchup, scores: scoreChoices(choices, matchup.votes, matchup.round) };
+  const scores = scoreChoices(choices, matchup.votes, matchup.round);
+  if (matchup.votes.length === 0) {
+    // QJZX R1: Qwen's unopposed answer earned 1000, with no win bonus.
+    const empty = matchup.answers.filter(answer => answer.blank && answer.text.trim() === "");
+    const complete = matchup.answers.filter(answer => !answer.blank && answer.text.trim() !== "");
+    if (empty.length === 1 && complete.length === 1) scores[complete[0]!.playerId] = ROUND_POOLS[matchup.round];
+  } else {
+    // A timed-out safety-quip request is recorded as blank/⁇. Once voting
+    // reveals the supplied text, blank remains true to distinguish it from a
+    // model answer. QJZX R1's RESPECT received 85 points for a 17% vote share.
+    for (const answer of matchup.answers) {
+      if (answer.blank && answer.text.trim() !== "" && answer.text !== "⁇") {
+        scores[answer.playerId] = Math.floor((scores[answer.playerId] ?? 0) / 2);
+      }
+    }
+  }
+  return { ...matchup, scores };
 }
 
 function thriplashEntryPrompt(entry: Thriplash["entries"][number], fallback: string): string {
