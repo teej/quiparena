@@ -130,7 +130,11 @@ importers:
         specifier: ^0.5.8
         version: 0.5.8
 
-  packages/core: {}
+  packages/core:
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
 
   packages/jackbox:
     dependencies:

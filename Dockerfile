@@ -8,7 +8,7 @@ RUN corepack enable
 
 COPY . .
 
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --prod=false
 
 RUN pnpm build
 RUN pnpm --filter @quiparena/web --prod deploy /app
