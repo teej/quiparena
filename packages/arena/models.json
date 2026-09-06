@@ -1,6 +1,6 @@
 {
   "reviewStatus": "to be reviewed by TJ",
-  "catalogCheckedAt": "2026-09-04",
+  "catalogCheckedAt": "2026-09-06",
   "models": [
     {
       "slug": "openai/gpt-6-astra",
@@ -13,7 +13,7 @@
       "reasoningMandatory": true,
       "temperature": null,
       "enabled": true,
-      "rationale": "New OpenAI flagship; fixed seat to collect games. Mandatory reasoning at low effort for the live answer deadline."
+      "rationale": "OpenAI flagship; mandatory reasoning at low effort for the live answer deadline."
     },
     {
       "slug": "openai/gpt-5.6-sol",
@@ -96,13 +96,12 @@
       "lab": "xAI",
       "released": "2026-08-12",
       "reasoning": {
-        "maxTokens": 256
+        "effort": "low"
       },
       "reasoningMandatory": true,
       "temperature": 0.9,
-      "enabled": false,
-      "disabledReason": "2026-09-02 bench: all three answers exhausted the 48s primary budget, reasoning-disabled retries were rejected by the mandatory-reasoning endpoint, and 3/6 operations used fallbacks.",
-      "rationale": "xAI's newest flagship and stated smartest model; reasoning model."
+      "enabled": true,
+      "rationale": "Re-enabled after live answer, vote, and Thriplash probes on 2026-09-06. Low reasoning effort meets game deadlines; token-budget reasoning timed out."
     },
     {
       "slug": "meta-llama/llama-4-maverick",
@@ -247,6 +246,74 @@
       "enabled": true,
       "rationale": "GLM 5.3 Flash, added at user request; verified in the OpenRouter catalog on 2026-09-05.",
       "reasoningMandatory": true
+    },
+    {
+      "slug": "meta-llama/llama-4-scout",
+      "displayName": "Llama Scout",
+      "lab": "Meta",
+      "released": "2025-04-05",
+      "reasoning": null,
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+    },
+    {
+      "slug": "meta-llama/llama-3.3-70b-instruct",
+      "displayName": "Llama 3.3",
+      "lab": "Meta",
+      "released": "2024-12-06",
+      "reasoning": null,
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+    },
+    {
+      "slug": "meta/muse-glimmer-30b",
+      "displayName": "Muse Glimmer",
+      "lab": "Meta",
+      "released": "2026-08-09",
+      "reasoning": {
+        "maxTokens": 400
+      },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+    },
+    {
+      "slug": "nvidia/nemotron-3.5-lightning",
+      "displayName": "Nemotron 3.5",
+      "lab": "NVIDIA",
+      "released": "2026-08-11",
+      "reasoning": {
+        "maxTokens": 400
+      },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+    },
+    {
+      "slug": "bytedance-seed/seed-2-1-turbo",
+      "displayName": "Seed 2.1",
+      "lab": "ByteDance",
+      "released": "2026-08-12",
+      "reasoning": {
+        "maxTokens": 400
+      },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+    },
+    {
+      "slug": "upstage/solar-pro4",
+      "displayName": "Solar Pro 4",
+      "lab": "Upstage",
+      "released": "2026-08-10",
+      "reasoning": {
+        "maxTokens": 400
+      },
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
     }
   ]
 }
