@@ -1,11 +1,11 @@
 import type { ArenaDatabase } from "@quiparena/arena";
-import { openDb } from "@quiparena/arena";
+import { openDb, gameAnalytics, traces, votes } from "@quiparena/arena";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { FrontierEntry } from "../shared/frontier.js";
 import { createDemoFixture } from "./demo.js";
 import { DbStore } from "./db-store.js";
-import { buildFrontier } from "./frontier.js";
+import { buildFrontier, refreshGameAnalytics } from "./frontier.js";
 import { InMemoryStore, type Store } from "./store.js";
 
 let db: ArenaDatabase | null = null;
@@ -83,6 +83,52 @@ describe("frontier", () => {
     expect((await memory.frontier("audience")).entries).toEqual([]);
     expect((await dbStore.frontier("blended")).entries.map(costSide).sort(bySlug))
       .toEqual(fromDb.entries.map(costSide).sort(bySlug));
+  });
+
+  it("keeps closed-game aggregates and rating snapshots usable without rereading raw history", async () => {
+    db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    dbStore = new DbStore(db, { ratingsDebounceMs: 60_000, computeRatingsOptions: { bootstrapResamples: 0 } });
+    await ingestFixture(dbStore, createDemoFixture(271_828));
+    await dbStore.recomputeRatings();
+    const before = await dbStore.frontier("player");
+    const boards = await Promise.all((["standard", "cross-family", "family-balanced"] as const)
+      .map(view => dbStore!.leaderboard("player", view)));
+    expect(boards.every(board => board.entries.length === 8)).toBe(true);
+    const saved = await db.select().from(gameAnalytics);
+    expect(saved).toHaveLength(1);
+    // Simulates unavailable archival detail, in an isolated in-memory database.
+    await db.delete(traces);
+    await db.delete(votes);
+    await refreshGameAnalytics(db);
+    expect(await db.select().from(gameAnalytics)).toEqual(saved);
+    expect(await dbStore.frontier("player")).toEqual(before);
+    for (const [index, view] of (["standard", "cross-family", "family-balanced"] as const).entries()) {
+      expect(await dbStore.leaderboard("player", view)).toEqual(boards[index]);
+    }
+    // A new store uses persisted results immediately, without a rebuild.
+    const reopened = new DbStore(db);
+    expect(await reopened.frontier("player")).toEqual(before);
+    await reopened.close();
+  });
+
+  it("combines latency sums and counts rather than averaging game averages", async () => {
+    db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    dbStore = new DbStore(db, { ratingsDebounceMs: 60_000, computeRatingsOptions: { bootstrapResamples: 0 } });
+    const first = createDemoFixture(271_828);
+    await ingestFixture(dbStore, first);
+    const second = JSON.parse(JSON.stringify(first).replaceAll(first.archive.game.id, "second-game")) as typeof first;
+    await ingestFixture(dbStore, second);
+    const rows = await db.select().from(traces);
+    const original = rows.find(row => row.gameId === "second-game" && row.kind === "answer")!;
+    await db.insert(traces).values({ ...original, id: "extra-answer", usage: { totalMs: 9_000 }, costUsd: null });
+    await dbStore.recomputeRatings();
+    const entry = (await dbStore.frontier("player")).entries.find(row => row.slug === original.modelSlug)!;
+    expect(entry.answers).toBe(3);
+    expect(entry.avgAnswerMs).toBeCloseTo((2 * Number(original.usage!["totalMs"]) + 9_000) / 3);
+    const firstTotals = await db.select().from(gameAnalytics);
+    await dbStore.recomputeRatings();
+    expect(await db.select().from(gameAnalytics)).toEqual(firstTotals);
+    expect((await dbStore.frontier("player")).entries.find(row => row.slug === original.modelSlug)).toEqual(entry);
   });
 
   it("treats unpriced traces as unknown cost and ties as played but not won", () => {

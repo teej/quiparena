@@ -29,6 +29,7 @@ describe("database schema and migrations", () => {
         "answers",
         "arena_settings",
         "events",
+        "game_analytics",
         "game_players",
         "games",
         "matchups",

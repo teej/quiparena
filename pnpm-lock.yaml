@@ -33,6 +33,9 @@ importers:
       '@quiparena/core':
         specifier: workspace:*
         version: link:../../packages/core
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.8)(postgres@3.4.9)
       hono:
         specifier: ^4.13.5
         version: 4.13.5

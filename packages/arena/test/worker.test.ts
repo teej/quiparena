@@ -75,7 +75,7 @@ describe("arena worker", () => {
       const ratings = await computeRatings(db, { bootstrapResamples: 0 });
       expect(ratings.populations.player).toHaveLength(4);
       const [snapshots] = await db.select({ value: count() }).from(ratingSnapshots);
-      expect(snapshots?.value).toBe(3);
+      expect(snapshots?.value).toBe(9);
     } finally {
       await db.close();
     }

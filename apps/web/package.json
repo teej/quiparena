@@ -19,7 +19,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^8.3.1",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

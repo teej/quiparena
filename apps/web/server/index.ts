@@ -20,25 +20,30 @@ export async function main(): Promise<void> {
   const databaseRequested = requestedStore === "db"
     || (requestedStore === undefined && databaseUrlSet);
   let store: Store;
+  let closeAnalytics: (() => Promise<void>) | undefined;
+  let housekeepingTail: Promise<void> = Promise.resolve();
   let closeDatabase: (() => Promise<void>) | undefined;
   let housekeeping: ReturnType<typeof setInterval> | undefined;
   if (databaseRequested) {
     const db = await openDb();
     closeDatabase = () => db.close();
     const dbStore = new DbStore(db);
+    closeAnalytics = () => dbStore.close();
     store = dbStore;
     // Housekeeping runs before live-state hydration so a stale game is never
     // restored as the current lobby after a restart.
     await dbStore.recomputeRatings().catch((error: unknown) => {
       console.error("QuipArena startup housekeeping failed", error);
     });
-    const sweep = () => void dbStore.recomputeRatings().then(async () => {
-      // PGlite has no background checkpointer. Persist a recovery point while
-      // the long-running game loop is active, as well as on clean shutdown.
-      if (db.$driver === "pglite" && "exec" in db.$client) await db.$client.exec("CHECKPOINT");
-    }).catch((error: unknown) => {
-      console.error("QuipArena housekeeping failed", error);
-    });
+    const sweep = () => {
+      housekeepingTail = dbStore.recomputeRatings().then(async () => {
+        // PGlite has no background checkpointer. Persist a recovery point while
+        // the long-running game loop is active, as well as on clean shutdown.
+        if (db.$driver === "pglite" && "exec" in db.$client) await db.$client.exec("CHECKPOINT");
+      }).catch((error: unknown) => {
+        console.error("QuipArena housekeeping failed", error);
+      });
+    };
     housekeeping = setInterval(sweep, 5 * 60_000);
     housekeeping.unref();
     console.log(`QuipArena store: database (${db.$driver})`);
@@ -56,6 +61,8 @@ export async function main(): Promise<void> {
     clearInterval(housekeeping);
     try {
       await service.close();
+      await housekeepingTail;
+      await closeAnalytics?.();
       await closeDatabase?.();
     } catch (error) {
       console.error("QuipArena shutdown failed", error);

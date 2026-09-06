@@ -1,0 +1,1 @@
+CREATE INDEX "rating_snapshots_view_population_computed_idx" ON "rating_snapshots" USING btree ("view","population","computed_at");

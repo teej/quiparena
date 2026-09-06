@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads";
 import { and, desc, eq, gte } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./db/client.js";
@@ -456,7 +457,7 @@ function statsForPopulation(
   return stats;
 }
 
-/** Read all comparisons, compute all three populations, and snapshot the results. */
+/** Fit every view/population off-thread and publish all nine snapshots atomically. */
 export async function computeRatings(
   db: ArenaDatabaseClient,
   options: ComputeRatingsOptions = {},
@@ -464,28 +465,19 @@ export async function computeRatings(
   await abandonStaleGames(db, { ...(options.now === undefined ? {} : { now: options.now }) });
   await backfillCompletedGameScores(db);
   const data = await readRatingData(db);
-  const validated = validatedOptions(options);
+  validatedOptions(options);
   const computedAt = options.now ?? new Date();
   if (!Number.isFinite(computedAt.getTime())) throw new Error("Invalid ratings timestamp");
-  const populations = Object.fromEntries(
-    (["player", "audience", "blended"] as const).map((population) => [
-      population,
-      fitBradleyTerry(data.comparisons, data.modelSlugs, {
-        ...options,
-        population,
-        stats: statsForPopulation(data, population, validated.blendedWeights),
-      }),
-    ]),
-  ) as Record<RatingPopulation, RatingEntry[]>;
+  const views = await fitInWorker(data, options);
+  const populations = views.standard;
 
   await db.transaction(async (transaction) => {
-    for (const population of ["player", "audience", "blended"] as const) {
-      await transaction.insert(ratingSnapshots).values({
-        computedAt,
-        population,
-        method: METHOD,
-        results: populations[population],
-      });
+    for (const view of ["standard", "cross-family", "family-balanced"] as const) {
+      for (const population of ["player", "audience", "blended"] as const) {
+        await transaction.insert(ratingSnapshots).values({
+          computedAt, population, method: METHOD, view, results: views[view][population],
+        });
+      }
     }
   });
   return { computedAt: computedAt.toISOString(), method: METHOD, populations };
@@ -497,51 +489,25 @@ function isRatingEntry(value: unknown): value is RatingEntry {
     && typeof (value as { rating?: unknown }).rating === "number";
 }
 
-/** Return the newest population snapshot, enriched with current model metadata and stats. */
+/** Read saved ratings and statistics, adding only current model metadata. */
 export async function leaderboard(
   db: ArenaDatabaseClient,
   population: RatingPopulation = "blended",
+  view: RatingView = "standard",
 ): Promise<LeaderboardEntry[]> {
   const start = await scoringSeason(db);
   const [snapshot] = await db.select().from(ratingSnapshots)
-    .where(and(eq(ratingSnapshots.population, population), start ? gte(ratingSnapshots.computedAt, new Date(start)) : undefined))
+    .where(and(eq(ratingSnapshots.population, population), eq(ratingSnapshots.view, view), start ? gte(ratingSnapshots.computedAt, new Date(start)) : undefined))
     .orderBy(desc(ratingSnapshots.computedAt), desc(ratingSnapshots.id))
     .limit(1);
   if (!snapshot || !Array.isArray(snapshot.results)) return [];
 
-  const [data, modelRows] = await Promise.all([
-    readRatingData(db),
-    db.select().from(models),
-  ]);
-  const fallbackStats = statsForPopulation(data, population, { player: 1, audience: 1 });
+  const modelRows = await db.select().from(models);
   const modelBySlug = new Map(modelRows.map((model) => [model.slug, model]));
   return snapshot.results.filter(isRatingEntry).map((entry) => {
     const model = modelBySlug.get(entry.modelSlug);
-    const current = data.stats.get(entry.modelSlug);
-    const fallback = fallbackStats.get(entry.modelSlug);
-    const stored = entry.stats;
-    const hasStoredMatchupStats = Number.isInteger(stored?.matchupWins)
-      && Number.isInteger(stored?.matchupLosses)
-      && Number.isInteger(stored?.matchupTies)
-      && Number.isInteger(stored?.matchupsPlayed);
-    const matchupStats = hasStoredMatchupStats ? stored : fallback;
-    const matchupWins = matchupStats?.matchupWins ?? 0;
-    const matchupLosses = matchupStats?.matchupLosses ?? 0;
-    const matchupTies = matchupStats?.matchupTies ?? 0;
-    const matchupsPlayed = matchupStats?.matchupsPlayed ?? 0;
     return {
       ...entry,
-      stats: {
-        games: current?.games ?? stored?.games ?? 0,
-        wins: current?.wins ?? stored?.wins ?? 0,
-        avgPlacement: current?.avgPlacement ?? stored?.avgPlacement ?? null,
-        matchupWins,
-        matchupLosses,
-        matchupTies,
-        matchupsPlayed,
-        matchupWinRate: matchupsPlayed > 0 ? matchupWins / matchupsPlayed : null,
-        avgPoints: current?.avgPoints ?? stored?.avgPoints ?? null,
-      },
       displayName: model?.displayName ?? entry.modelSlug.split("/").at(-1) ?? entry.modelSlug,
       lab: model?.lab ?? entry.modelSlug.split("/", 1)[0] ?? "unknown",
       enabled: model?.enabled ?? false,
@@ -577,13 +543,49 @@ export function adjustJudgeVotes(comparisons: readonly Comparison[], view: Ratin
 
 /** Alternate analytical views never overwrite the ordinary game scores or rating snapshot. */
 export async function ratingView(db: ArenaDatabaseClient, population: RatingPopulation, view: RatingView): Promise<LeaderboardEntry[]> {
-  if (view === "standard") return leaderboard(db, population);
-  const [data, base] = await Promise.all([readRatingData(db, view), leaderboard(db, population)]);
-  const fit = fitBradleyTerry(data.comparisons, data.modelSlugs, { population,
-    stats: statsForPopulation(data, population, { player: 1, audience: 1 }) });
-  const metadata = new Map(base.map(row => [row.modelSlug, row]));
-  return fit.flatMap(row => {
-    const original = metadata.get(row.modelSlug);
-    return original ? [{ ...original, ...row }] : [];
+  return leaderboard(db, population, view);
+}
+
+type RatingViews = Record<RatingView, Record<RatingPopulation, RatingEntry[]>>;
+
+/** CPU-only calculation; the worker never opens the database. */
+export function fitRatingViews(data: RatingData, options: ComputeRatingsOptions): RatingViews {
+  const weights = validatedOptions(options).blendedWeights;
+  return Object.fromEntries((["standard", "cross-family", "family-balanced"] as const).map(view => {
+    const comparisons = adjustJudgeVotes(data.comparisons, view);
+    const grouped = new Map<string, RatedMatchup>();
+    for (const c of comparisons) {
+      const key = c.matchupId!;
+      const matchup = grouped.get(key) ?? { modelSlugs: [c.winner, c.loser], votes: [] };
+      matchup.votes.push({ modelSlug: c.winner, population: c.population, weight: c.weight });
+      grouped.set(key, matchup);
+    }
+    const adjusted = { ...data, comparisons, matchups: [...grouped.values()] };
+    return [view, Object.fromEntries((["player", "audience", "blended"] as const).map(population => [
+      population, fitBradleyTerry(comparisons, data.modelSlugs, {
+        ...options, population, stats: statsForPopulation(adjusted, population, weights),
+      }),
+    ]))];
+  })) as RatingViews;
+}
+
+function fitInWorker(data: RatingData, options: ComputeRatingsOptions): Promise<RatingViews> {
+  // Seeded function-valued RNGs are used by deterministic callers, never the web server.
+  if (options.rng) return Promise.resolve(fitRatingViews(data, options));
+  const moduleUrl = import.meta.url;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const mod = workerData.moduleUrl.endsWith('.ts')
+          ? await (await import('tsx/esm/api')).tsImport(workerData.moduleUrl, workerData.moduleUrl)
+          : await import(workerData.moduleUrl);
+        parentPort.postMessage(mod.fitRatingViews(workerData.data, workerData.options));
+      })().catch(error => { throw error; });
+    `, { eval: true, workerData: { moduleUrl, data, options } });
+    let received = false;
+    worker.once("message", value => { received = true; resolve(value as RatingViews); });
+    worker.once("error", reject);
+    worker.once("exit", code => { if (!received) reject(new Error(`Ratings worker exited without results (${code})`)); });
   });
 }

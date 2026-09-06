@@ -1,6 +1,7 @@
 import type { GameEvent, StreamEvent } from "@quiparena/core";
 import {
   computeRatings,
+  abandonStaleGames,
   ratingView,
   modelHistory,
   scoringSeason,
@@ -28,7 +29,7 @@ import type {
 import { liveStateToGame, replayEvents } from "../shared/reducer.js";
 import type { Store } from "./store.js";
 import type { FrontierResponse } from "../shared/frontier.js";
-import { loadDbFrontier } from "./frontier.js";
+import { loadDbFrontier, refreshGameAnalytics } from "./frontier.js";
 
 export interface DbStoreOptions {
   ratingsDebounceMs?: number;
@@ -154,7 +155,11 @@ export class DbStore implements Store {
       clearTimeout(this.ratingsTimer);
       this.ratingsTimer = null;
     }
-    const run = this.ratingsTail.then(() => computeRatings(this.db, this.computeRatingsOptions));
+    const run = this.ratingsTail.then(async () => {
+      await abandonStaleGames(this.db, this.computeRatingsOptions.now ? { now: this.computeRatingsOptions.now } : {});
+      await refreshGameAnalytics(this.db);
+      return computeRatings(this.db, this.computeRatingsOptions);
+    });
     this.ratingsTail = run.then(() => undefined, () => undefined);
     return run;
   }

@@ -134,7 +134,7 @@ describe("Bradley-Terry ratings", () => {
         .toBeCloseTo(1_000, 8);
 
       const [snapshotCount] = await db.select({ value: count() }).from(ratingSnapshots);
-      expect(snapshotCount?.value).toBe(3);
+      expect(snapshotCount?.value).toBe(9);
       const board = await leaderboard(db);
       expect(board[0]).toMatchObject({
         modelSlug: "lab/dominant",

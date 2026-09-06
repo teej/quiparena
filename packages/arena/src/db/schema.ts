@@ -186,10 +186,18 @@ export const ratingSnapshots = pgTable("rating_snapshots", {
   computedAt: timestamp("computed_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   population: ratingPopulation("population").notNull(),
   method: text("method").notNull(),
+  view: text("view").notNull().default("standard"),
   results: jsonb("results").$type<unknown>().notNull(),
 }, (table) => [
   index("rating_snapshots_population_computed_idx").on(table.population, table.computedAt),
+  index("rating_snapshots_view_population_computed_idx").on(table.view, table.population, table.computedAt),
 ]);
+
+export const gameAnalytics = pgTable("game_analytics", {
+  gameId: text("game_id").primaryKey().references(() => games.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  totals: jsonb("totals").$type<unknown>().notNull(),
+});
 
 export const arenaSettings = pgTable("arena_settings", {
   key: text("key").primaryKey(),
@@ -198,6 +206,7 @@ export const arenaSettings = pgTable("arena_settings", {
 
 export const schema = {
   arenaSettings,
+  gameAnalytics,
   models,
   games,
   gamePlayers,

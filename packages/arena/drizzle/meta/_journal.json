@@ -50,6 +50,20 @@
       "when": 1788625687430,
       "tag": "0006_scoring_season",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788718701169,
+      "tag": "0007_analytics_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788718754771,
+      "tag": "0008_rating_view_index",
+      "breakpoints": true
     }
   ]
 }
