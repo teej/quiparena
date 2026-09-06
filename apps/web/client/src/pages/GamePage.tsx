@@ -166,10 +166,9 @@ export function GamePage() {
           <h2 className="rule-label"><span>{observed ? "observed final" : "final"}</span></h2>
           <ol className="standings__list">
             {scores.map(([playerId, score], index) => (
-              <li key={playerId} data-seat={index < 2 ? "kept" : "rotates"}>
+              <li key={playerId}>
                 <span className="standings__rank">{game.observedPlacements?.[playerId] ?? index + 1}</span>
                 <span className="standings__name">{nameOf(playerId)}</span>
-                <span className="standings__note">{index < 2 ? "keeps the seat" : ""}</span>
                 <span className="standings__score">{formatScore(score)}</span>
               </li>
             ))}

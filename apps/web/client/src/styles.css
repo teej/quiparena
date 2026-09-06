@@ -46,11 +46,11 @@ b, strong { font-weight: 700; }
 /* micro-label: the one move that shows up in every project */
 .label, .rule-label, .sep, .site__nav, .site__tv, .site__footer, .live__bar, .pane__head, .pane__status,
 .matchup__kicker, .option__letter, .option__meta, .option__tally, .segmented, th, .mono, .num, .board__id,
-.tv__status, .tv__room, .standings__rank, .standings__note, .replay__number, .trace summary, .trace__timing, .option__timing, .note, .back {
+.tv__status, .tv__room, .standings__rank, .replay__number, .trace summary, .trace__timing, .option__timing, .note, .back {
   font-family: var(--mono);
 }
 .label, .rule-label, .site__nav a, .site__tv, .live__bar, .pane__status, .matchup__kicker, .option__meta,
-.segmented, th, .tv__status, .tv__room, .standings__note, .trace summary, .back, .site__footer {
+.segmented, th, .tv__status, .tv__room, .trace summary, .back, .site__footer {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -150,12 +150,10 @@ b, strong { font-weight: 700; }
 /* standings */
 .standings { max-width: 560px; }
 .standings__list { list-style: none; padding: 0; display: grid; }
-.standings__list li { display: grid; grid-template-columns: 28px 1fr auto auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.standings__list li { display: grid; grid-template-columns: 28px 1fr auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .standings__rank { color: var(--dim); }
 .standings__name { font-weight: 700; }
-.standings__note { color: var(--ok); }
 .standings__score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.standings__list li[data-seat="rotates"] .standings__name { font-weight: 400; color: var(--muted); }
 
 /* pages */
 .page { width: min(920px, 100%); margin: 0 auto; padding: 32px 24px 48px; display: grid; gap: 28px; align-content: start; }

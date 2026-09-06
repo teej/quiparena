@@ -16,10 +16,9 @@ export function Standings({ state }: { state: LiveState }) {
       <h2 className="rule-label"><span>{observed ? "observed final" : "final"}</span></h2>
       <ol className="standings__list">
         {rows.map(([id, score], index) => (
-          <li key={id} data-seat={index < 2 ? "kept" : "rotates"}>
+          <li key={id}>
             <span className="standings__rank">{state.observedPlacements?.[id] ?? index + 1}</span>
             <span className="standings__name">{state.players[id]?.player.name ?? id}</span>
-            <span className="standings__note">{index < 2 ? "keeps the seat" : ""}</span>
             <span className="standings__score">{formatScore(score)}</span>
           </li>
         ))}
