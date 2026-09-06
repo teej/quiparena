@@ -6,6 +6,32 @@ import { GameAggregator } from "../src/aggregator.js";
 const at = "2026-09-02T20:00:00.000Z";
 
 describe("GameAggregator", () => {
+  it("recovers the uniquely missing second prompt as a blank at the round boundary", () => {
+    const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 4 });
+    for (const id of ["p1", "p2", "p3", "p4"]) add(aggregator, {
+      type: "player.joined", gameId: "game-4", player: { id, name: id, modelId: null }, at,
+    });
+    for (const [id, prompt] of [["p1", "A"], ["p2", "A"], ["p2", "B"], ["p3", "B"],
+      ["p3", "C"], ["p4", "C"], ["p4", "D"]]) add(aggregator, answer(id!, 2, prompt!, id!));
+    const emitted = aggregator.ingest({ type: "round.started", gameId: "game-4", round: 3, at });
+    const matchups = emitted.filter(event => event.type === "matchup.resolved");
+    expect(matchups).toHaveLength(4);
+    expect(matchups.find(event => event.matchup.prompt === "D")?.matchup.answers).toEqual([
+      { playerId: "p1", text: "", blank: true }, { playerId: "p4", text: "p4", blank: false },
+    ]);
+  });
+
+  it("does not guess the authors when more than one submission is missing", () => {
+    const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 4 });
+    for (const id of ["p1", "p2", "p3", "p4"]) add(aggregator, {
+      type: "player.joined", gameId: "game-4", player: { id, name: id, modelId: null }, at,
+    });
+    for (const [id, prompt] of [["p1", "A"], ["p2", "A"], ["p3", "B"],
+      ["p3", "C"], ["p4", "C"], ["p4", "D"]]) add(aggregator, answer(id!, 2, prompt!, id!));
+    const emitted = aggregator.ingest({ type: "round.started", gameId: "game-4", round: 3, at });
+    expect(emitted.filter(event => event.type === "matchup.resolved").map(event => event.matchup.prompt)).toEqual(["A", "C"]);
+  });
+
   it("emits seat-repeated lifecycle events only once", () => {
     const emitted: GameEvent[] = [];
     const aggregator = new GameAggregator({

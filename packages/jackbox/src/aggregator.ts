@@ -242,6 +242,25 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
 
   #flushResolved(at: string, emitted: GameEvent[], force: boolean, normalOnly = false): void {
     const playerCount = this.#options.expectedPlayerCount ?? this.#players.size;
+    if (force && this.#players.size === playerCount) {
+      // A timeout on the first prompt can make the controller skip dealing the
+      // second one entirely. Each seat has two normal-round answers. Recover
+      // the absent blank only when both its owner and prompt are unambiguous.
+      for (const round of [1, 2] as const) {
+        const pools = [...this.#answerPools.values()].filter(pool => pool.round === round);
+        const counts = new Map([...this.#players.keys()].map(id => [id, 0]));
+        for (const pool of pools) for (const id of pool.answers.keys()) {
+          counts.set(id, (counts.get(id) ?? 0) + 1);
+        }
+        const missing = [...counts].filter(([, count]) => count !== 2);
+        const unpaired = pools.filter(pool => pool.answers.size % 2 !== 0);
+        if (missing.length !== 1 || missing[0]![1] !== 1 || unpaired.length !== 1) continue;
+        const playerId = missing[0]![0];
+        const pool = unpaired[0]!;
+        if (pool.answers.size !== 1 || pool.answers.has(playerId)) continue;
+        pool.answers.set(playerId, { playerId, text: "", blank: true });
+      }
+    }
     for (const accumulator of this.#normal.values()) {
       if (accumulator.emitted) continue;
       const submitted = [...accumulator.pool.answers.values()];
