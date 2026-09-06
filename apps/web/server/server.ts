@@ -76,8 +76,13 @@ export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
     });
   });
 
+  const ingestDrains = new Map<WebSocket, Promise<void>>();
   sockets.on("connection", (socket) => {
     let processing = Promise.resolve();
+    ingestDrains.set(socket, processing);
+    socket.once("close", () => {
+      void processing.finally(() => ingestDrains.delete(socket));
+    });
     socket.on("message", (data, isBinary) => {
       processing = processing.then(async () => {
         if (isBinary) {
@@ -103,6 +108,7 @@ export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
       }).catch((error: unknown) => {
         sendIngestError(socket, error instanceof Error ? error.message : "Could not process event");
       });
+      ingestDrains.set(socket, processing);
     });
   });
 
@@ -129,9 +135,10 @@ export function createQuipArenaServer(options: ServerOptions): QuipArenaServer {
       });
     },
     close: async () => {
-      live.close();
       for (const client of sockets.clients) client.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await Promise.all(ingestDrains.values());
+      live.close();
       if (!httpServer.listening) return;
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => error ? reject(error) : resolve());
