@@ -1,3 +1,4 @@
+import { ModelLink } from "../components/ModelLink.js";
 import { Link } from "react-router";
 
 import type { GameSummary } from "../../../shared/types.js";
@@ -32,7 +33,7 @@ export function GamesPage() {
               <tr key={game.id} data-status={game.status}>
                 <td className="mono"><Link to={`/games/${encodeURIComponent(game.id)}`}>{game.roomCode}</Link></td>
                 <td><span className="status-tag" data-status={game.status}>{game.status}</span></td>
-                <td>{game.winner ? <strong>{game.winner.name}</strong> : <span className="dim">–</span>}</td>
+                <td>{game.winner ? <strong><ModelLink modelId={game.winner.modelId}>{game.winner.name}</ModelLink></strong> : <span className="dim">–</span>}</td>
                 <td className="num">{game.playerCount}</td>
                 <td className="num">{game.topScore === null ? "–" : formatScore(game.topScore)}</td>
                 <td className="num">{formatCost(game.totalCostUsd)}</td>

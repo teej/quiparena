@@ -1,3 +1,4 @@
+import { ModelLink } from "../components/ModelLink.js";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { LivePlayerState } from "../../../shared/types.js";
@@ -38,7 +39,7 @@ function TvPlayer({ player }: { player: LivePlayerState }) {
   return <li className="tv__player" data-activity={player.activity}
     style={{ "--player": softColor(player.avatarColor) } as CSSProperties}
     tabIndex={reasoning ? 0 : undefined} aria-describedby={reasoning ? tooltipId : undefined}>
-    <span className="tv__name">{player.player.name}</span>
+    <span className="tv__name"><ModelLink modelId={player.player.modelId}>{player.player.name}</ModelLink></span>
     <span className="tv__status">{player.activity === "waiting" ? "" : STATUS[player.activity]}</span>
     <p className="tv__line" ref={viewport} data-kind={showAnswer ? "answer" : "reasoning"}>
       {text}{streaming && !showAnswer && <span className="caret" aria-hidden="true" />}

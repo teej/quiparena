@@ -1,3 +1,4 @@
+import { ModelLink } from "./ModelLink.js";
 import type { LiveState } from "../../../shared/types.js";
 
 const LETTERS = ["A", "B"] as const;
@@ -22,14 +23,15 @@ export function MatchupPanel({ state, compact = false }: { state: LiveState; com
       <div className="matchup__options">
         {texts.slice(0, 2).map((text, choice) => {
           const voters = Object.entries(current.votes).filter(([, vote]) => vote === choice).map(([id]) => nameOf(id));
-          const author = answers?.[choice] ? nameOf(answers[choice]!.playerId) : null;
+          const authorId = answers?.[choice]?.playerId;
+          const author = authorId ? nameOf(authorId) : null;
           return (
             <div className="option" data-leader={leader === choice} key={`${choice}-${text}`}>
               <span className="option__letter">{LETTERS[choice]}</span>
               <div className="option__body">
                 <p className="option__text">{text}</p>
                 <p className="option__meta">
-                  {author && <span className="option__author">{author}</span>}
+                  {author && <span className="option__author"><ModelLink modelId={authorId ? state.players[authorId]?.player.modelId : null}>{author}</ModelLink></span>}
                   <span className="option__votes">{voters.length === 0 ? "—" : voters.join(", ")}</span>
                 </p>
               </div>

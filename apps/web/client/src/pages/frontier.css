@@ -10,7 +10,7 @@
 .frontier__tick--minor { fill: var(--dim); }
 .frontier__axis-label { letter-spacing: 0.08em; text-transform: uppercase; fill: var(--dim); }
 .frontier__path { fill: none; stroke: var(--accent); stroke-width: 1; opacity: 0.8; shape-rendering: crispEdges; }
-.frontier__label { pointer-events: none; paint-order: stroke; stroke: var(--night); stroke-width: 4px; stroke-linejoin: round; }
+.frontier__label { pointer-events: auto; paint-order: stroke; stroke: var(--night); stroke-width: 4px; stroke-linejoin: round; }
 .frontier__leader { stroke: var(--dim); stroke-width: 1; }
 .frontier__label--frontier { fill: var(--ink); }
 .frontier__mark { cursor: default; outline: 0; }

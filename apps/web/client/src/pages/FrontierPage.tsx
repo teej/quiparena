@@ -1,3 +1,4 @@
+import { ModelLink } from "../components/ModelLink.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { FrontierEntry, FrontierResponse } from "../../../shared/frontier.js";
@@ -257,15 +258,16 @@ function FrontierChart({ entries, frontier }: { entries: readonly FrontierEntry[
             />
           ))}
           {plot.placed.map((item) => (
-            <text
-              key={item.entry.slug}
-              x={item.labelX}
-              y={item.labelY}
-              textAnchor={item.anchor}
-              className={frontier.has(item.entry.slug) ? "frontier__label frontier__label--frontier" : "frontier__label"}
-            >
-              {item.entry.displayName}
-            </text>
+            <ModelLink modelId={item.entry.slug} key={item.entry.slug}>
+              <text
+                x={item.labelX}
+                y={item.labelY}
+                textAnchor={item.anchor}
+                className={frontier.has(item.entry.slug) ? "frontier__label frontier__label--frontier" : "frontier__label"}
+              >
+                {item.entry.displayName}
+              </text>
+            </ModelLink>
           ))}
         </g>
 
@@ -359,7 +361,7 @@ function FrontierTable({ entries, frontier }: { entries: readonly FrontierEntry[
               {frontier.has(entry.slug) && <i className="frontier__flag" aria-label="on the frontier" />}
             </td>
             <td>
-              <strong>{entry.displayName}</strong>
+              <strong><ModelLink modelId={entry.slug}>{entry.displayName}</ModelLink></strong>
               <span className="board__id">{entry.slug}</span>
             </td>
             <td className="num board__rating">{entry.rating} <span className="board__plus-minus">±{entry.plusMinus}</span></td>

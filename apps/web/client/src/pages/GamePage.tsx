@@ -1,3 +1,4 @@
+import { ModelLink } from "../components/ModelLink.js";
 import type { Matchup } from "@quiparena/core";
 import { Link, useParams } from "react-router";
 
@@ -42,8 +43,8 @@ function Trace({ trace }: { trace: AnswerTrace | undefined }) {
 }
 
 /** An answer card whose whole face toggles the reasoning underneath it. */
-function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
-  letter: string; text: string; author: string; voters: string[]; tally: number; leader: boolean; trace: AnswerTrace | undefined;
+function AnswerCard({ letter, text, author, modelId, voters, tally, leader, trace }: {
+  letter: string; text: string; author: string; modelId: string | null | undefined; voters: string[]; tally: number; leader: boolean; trace: AnswerTrace | undefined;
 }) {
   const hasTrace = Boolean(trace?.reasoning);
   const annotation = traceAnnotation(trace);
@@ -52,7 +53,7 @@ function AnswerCard({ letter, text, author, voters, tally, leader, trace }: {
       <span className="option__letter">{letter}</span>
       <div className="option__body">
         <p className="option__text">{text}</p>
-        <p className="option__meta"><span className="option__author">{author}</span></p>
+        <p className="option__meta"><span className="option__author"><ModelLink modelId={modelId}>{author}</ModelLink></span></p>
         {annotation && <p className="option__timing">{annotation}</p>}
         <p className="option__meta option__voter-list">
           <span>voted by</span>
@@ -89,6 +90,7 @@ function MatchupReplay({ matchup, data, number }: { matchup: Matchup; data: Arch
             letter={LETTERS[choice] ?? "?"}
             text={answer.blank && (!answer.text || answer.text === "⁇") ? "no answer" : answer.text}
             author={nameOf(answer.playerId)}
+            modelId={data.game.players.find(player => player.id === answer.playerId)?.modelId}
             voters={playerVotes.filter((vote) => vote.choice === choice).map((vote) => nameOf(vote.voterId))}
             tally={tallies[choice] ?? 0}
             leader={leader === choice}
@@ -150,7 +152,7 @@ export function GamePage() {
                 const votes = replay.thriplash?.votes.filter((vote) => vote.population === "player" && replay.thriplash?.entries[vote.choice]?.playerId === entry.playerId).length ?? 0;
                 return (
                   <section className="thriplash__entry" key={entry.playerId}>
-                    <p className="option__meta"><span className="option__author">{nameOf(entry.playerId)}</span><span className="option__votes">{votes} {votes === 1 ? "vote" : "votes"}</span></p>
+                    <p className="option__meta"><span className="option__author"><ModelLink modelId={game.players.find(player => player.id === entry.playerId)?.modelId}>{nameOf(entry.playerId)}</ModelLink></span><span className="option__votes">{votes} {votes === 1 ? "vote" : "votes"}</span></p>
                     <ol>{entry.lines.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}</ol>
                     <Trace trace={trace} />
                   </section>
@@ -168,7 +170,7 @@ export function GamePage() {
             {scores.map(([playerId, score], index) => (
               <li key={playerId}>
                 <span className="standings__rank">{game.observedPlacements?.[playerId] ?? index + 1}</span>
-                <span className="standings__name">{nameOf(playerId)}</span>
+                <span className="standings__name"><ModelLink modelId={game.players.find(player => player.id === playerId)?.modelId}>{nameOf(playerId)}</ModelLink></span>
                 <span className="standings__score">{formatScore(score)}</span>
               </li>
             ))}

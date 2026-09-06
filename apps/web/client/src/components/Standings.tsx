@@ -1,3 +1,4 @@
+import { ModelLink } from "./ModelLink.js";
 import type { LiveState } from "../../../shared/types.js";
 import { formatScore } from "../api.js";
 
@@ -18,7 +19,7 @@ export function Standings({ state }: { state: LiveState }) {
         {rows.map(([id, score], index) => (
           <li key={id}>
             <span className="standings__rank">{state.observedPlacements?.[id] ?? index + 1}</span>
-            <span className="standings__name">{state.players[id]?.player.name ?? id}</span>
+            <span className="standings__name"><ModelLink modelId={state.players[id]?.player.modelId}>{state.players[id]?.player.name ?? id}</ModelLink></span>
             <span className="standings__score">{formatScore(score)}</span>
           </li>
         ))}

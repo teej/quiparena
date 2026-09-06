@@ -1,3 +1,4 @@
+import { ModelLink } from "./ModelLink.js";
 import type { CSSProperties } from "react";
 
 import type { AnswerTrace, LivePlayerState } from "../../../shared/types.js";
@@ -40,7 +41,7 @@ export function Pane({ player, index, trace }: { player: LivePlayerState; index:
     >
       <header className="pane__head">
         <span className="pane__index">{String(index + 1).padStart(2, "0")}</span>
-        <span className="pane__name">{player.player.name}</span>
+        <span className="pane__name"><ModelLink modelId={player.player.modelId}>{player.player.name}</ModelLink></span>
         <span className="pane__lab">{player.lab}</span>
         {player.activity !== "waiting" && <span className="pane__status">{STATUS[player.activity]}</span>}
       </header>
