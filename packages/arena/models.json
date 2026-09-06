@@ -278,7 +278,8 @@
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
+      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06.",
+      "reasoningMandatory": true
     },
     {
       "slug": "nvidia/nemotron-3.5-lightning",
