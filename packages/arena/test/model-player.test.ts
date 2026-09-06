@@ -161,11 +161,23 @@ describe("parseVote", () => {
     expect(parseVote("probably the second one", 2)).toBeUndefined();
   });
 
+  it("accepts echoed option labels only when their letter and number agree", () => {
+    expect(parseVote("B (2)", 2)).toBe(1);
+    expect(parseVote("a ( 1 ).", 2)).toBe(0);
+    expect(parseVote("Choice: B (2)", 2)).toBe(1);
+    expect(parseVote("C (3)", 3)).toBe(2);
+    expect(parseVote("B (1)", 2)).toBeUndefined();
+    expect(parseVote("Choice: A (2)", 2)).toBeUndefined();
+    expect(parseVote("A (0)", 2)).toBeUndefined();
+    expect(parseVote("C (3)", 2)).toBeUndefined();
+    expect(parseVote("2 (2)", 2)).toBeUndefined();
+  });
+
   it("parses a model vote and randomly degrades when parsing fails", async () => {
     const parsed = new ModelPlayer({
       model: "test/vote",
       displayName: "Vote",
-      languageModel: mockModel("Choice: B"),
+      languageModel: mockModel("B (2)"),
       safetyMarginMs: 0,
       logger: quietLogger(),
     });

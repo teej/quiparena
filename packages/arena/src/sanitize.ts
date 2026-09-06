@@ -121,11 +121,18 @@ export function parseVote(value: string, optionCount: number): number | undefine
 
   const text = stripSurroundingQuotes(stripMarkdown(value)).replace(/\s+/g, " ").trim();
   const prefixed = text.match(
-    /\b(?:option|answer|choice|pick|choose|select(?:ed)?)\s*(?:is\s*)?[:#-]?\s*([A-Z]|\d+)\b/i,
+    /\b(?:option|answer|choice|pick|choose|select(?:ed)?)\s*(?:is\s*)?[:#-]?\s*([A-Z]|\d+)\b(?:\s*\(\s*(\d+)\s*\))?/i,
   );
-  const exact = text.match(/^\s*([A-Z]|\d+)\s*[).:!?-]*\s*$/i);
-  const token = prefixed?.[1] ?? exact?.[1];
+  const exact = text.match(/^\s*([A-Z]|\d+)(?:\s*\(\s*(\d+)\s*\))?\s*[).:!?-]*\s*$/i);
+  const match = prefixed ?? exact;
+  const token = match?.[1];
   if (!token) return undefined;
+
+  // The prompt itself labels choices as "B (2)". Accept an echoed label only
+  // when both parts identify the same choice; never guess between conflicts.
+  if (match?.[2] !== undefined
+    && (!/^[A-Z]$/i.test(token)
+      || token.toUpperCase().charCodeAt(0) - 64 !== Number(match[2]))) return undefined;
 
   if (/^[A-Z]$/i.test(token)) {
     const index = token.toUpperCase().charCodeAt(0) - 65;
