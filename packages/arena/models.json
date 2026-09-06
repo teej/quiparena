@@ -328,8 +328,21 @@
       },
       "reasoningMandatory": true,
       "temperature": 0.9,
+      "enabled": false,
+      "rationale": "Retained for future re-testing. Grok 4.3 with reasoning disabled meets the current live deadlines more reliably.",
+      "disabledReason": "2026-09-06: passed short preflights but timed out on both first-round live answers; mandatory reasoning cannot be disabled."
+    },
+    {
+      "slug": "x-ai/grok-4.3",
+      "displayName": "Grok 4.3",
+      "lab": "xAI",
+      "released": "2026-04-30",
+      "reasoning": {
+        "effort": "none"
+      },
+      "temperature": 0.9,
       "enabled": true,
-      "rationale": "Passed two sets of live-limit answer, vote, and Thriplash probes at minimal effort on 2026-09-06; responsive alternative to Grok 4.6."
+      "rationale": "Allows reasoning to be disabled. Passed answer, vote, and Thriplash probes, including failed live prompts and game history, in 0.5\u20131.3s on 2026-09-06."
     }
   ]
 }
