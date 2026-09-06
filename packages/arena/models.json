@@ -286,11 +286,11 @@
       "lab": "NVIDIA",
       "released": "2026-08-11",
       "reasoning": {
-        "maxTokens": 400
+        "effort": "none"
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
+      "rationale": "Reasoning disabled after live vote truncation and retry timeouts. Same failed prompts with full game history returned direct votes in 0.12\u20130.25s on 2026-09-06."
     },
     {
       "slug": "bytedance-seed/seed-2-1-turbo",
