@@ -100,8 +100,9 @@
       },
       "reasoningMandatory": true,
       "temperature": 0.9,
-      "enabled": true,
-      "rationale": "Re-enabled after live answer, vote, and Thriplash probes on 2026-09-06. Low reasoning effort meets game deadlines; token-budget reasoning timed out."
+      "enabled": false,
+      "rationale": "Newest xAI flagship. Passed longer probes but missed actual live answer deadlines; retained for future re-testing.",
+      "disabledReason": "2026-09-06 live re-test: low and minimal effort still miss the 15s answer deadline; use Grok 4.5 minimal effort for now."
     },
     {
       "slug": "meta-llama/llama-4-maverick",
@@ -277,7 +278,7 @@
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
     },
     {
       "slug": "nvidia/nemotron-3.5-lightning",
@@ -289,7 +290,7 @@
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
     },
     {
       "slug": "bytedance-seed/seed-2-1-turbo",
@@ -297,11 +298,11 @@
       "lab": "ByteDance",
       "released": "2026-08-12",
       "reasoning": {
-        "maxTokens": 400
+        "effort": "none"
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
     },
     {
       "slug": "upstage/solar-pro4",
@@ -309,11 +310,26 @@
       "lab": "Upstage",
       "released": "2026-08-10",
       "reasoning": {
-        "maxTokens": 400
+        "maxTokens": 128,
+        "voteMaxTokens": 64,
+        "thriplashMaxTokens": 128
       },
       "temperature": 0.9,
       "enabled": true,
-      "rationale": "Added for broader model and lab coverage; passed live answer, vote, and Thriplash probes on 2026-09-06."
+      "rationale": "Added for broader model and lab coverage; passed answer and Thriplash probes at the actual 15s limit and votes at 10s on 2026-09-06."
+    },
+    {
+      "slug": "x-ai/grok-4.5",
+      "displayName": "Grok 4.5",
+      "lab": "xAI",
+      "released": "2026-07-08",
+      "reasoning": {
+        "effort": "minimal"
+      },
+      "reasoningMandatory": true,
+      "temperature": 0.9,
+      "enabled": true,
+      "rationale": "Passed two sets of live-limit answer, vote, and Thriplash probes at minimal effort on 2026-09-06; responsive alternative to Grok 4.6."
     }
   ]
 }
