@@ -30,3 +30,11 @@
   .model-answer__text { font-size: 17px; }
   .model-game__head { font-size: 10px; }
 }
+
+.model-answer__result { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 11px; line-height: 1.5; }
+.model-answer__outcome { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.model-answer__outcome::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.model-answer__result[data-outcome="won"] .model-answer__outcome { color: var(--ok); }
+.model-answer__result[data-outcome="tied"] .model-answer__outcome { color: var(--muted); }
+.model-answer__result[data-outcome="lost"] .model-answer__outcome { color: var(--warn); }
+.model-answer__votes { color: var(--dim); font: 10px/1.5 var(--mono); font-variant-numeric: tabular-nums; }

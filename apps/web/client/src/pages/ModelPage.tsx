@@ -43,6 +43,12 @@ export function ModelPage() {
             <div className="model-answer__body">
               <h2 className="model-answer__prompt">{answer.prompt}</h2>
               <p className="model-answer__text" data-empty={!hasAnswer}>{hasAnswer ? answer.text : "—"}</p>
+              {answer.result && <div className="model-answer__result" data-outcome={answer.result.outcome}>
+                <span className="model-answer__outcome">{({ won: "Won", tied: "Tied", lost: "Lost" })[answer.result.outcome]}</span>
+                <span className="model-answer__votes">{answer.result.automatic
+                  ? "No recorded votes"
+                  : `${answer.result.votes.toLocaleString("en-US")} / ${answer.result.totalVotes.toLocaleString("en-US")} votes`}</span>
+              </div>}
               {answer.blank && hasAnswer && <span className="model-answer__fallback">Game-provided fallback</span>}
             </div>
           </article>;

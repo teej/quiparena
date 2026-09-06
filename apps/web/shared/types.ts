@@ -126,7 +126,7 @@ export interface ModelHistory {
   model: { slug: string; name: string; lab: string };
   offset: number;
   hasMore: boolean;
-  answers: Array<{ id: string; gameId: string; startedAt: string; round: number; prompt: string; text: string; blank: boolean }>;
+  answers: Array<{ id: string; gameId: string; startedAt: string; round: number; prompt: string; text: string; blank: boolean; result: { outcome: "won" | "tied" | "lost"; votes: number; totalVotes: number; automatic: boolean } | null }>;
 }
 
 export interface LeaderboardResponse {
