@@ -1,0 +1,32 @@
+.model-page { gap: 0; padding-top: 30px; }
+.model-page__head { display: grid; gap: 28px; padding-bottom: 36px; }
+.model-page__back { width: fit-content; font-size: 12px; color: var(--muted); }
+.model-page__back:hover { color: var(--ink); }
+.model-page__head h1 { font-size: clamp(26px, 4vw, 34px); line-height: 1.2; font-weight: 500; letter-spacing: -0.035em; }
+.model-page__id { margin-top: 10px; font: 11px/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.model-page__section-title { padding-bottom: 14px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 500; color: var(--muted); }
+.model-page > .note { padding-top: 24px; }
+.model-history { display: grid; gap: 32px; }
+.model-game { min-width: 0; }
+.model-game__head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 20px; padding: 20px 0 12px; font-size: 11px; color: var(--muted); }
+.model-game__head time { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.model-game__head a { color: var(--muted); }
+.model-game__head a:hover { color: var(--ink); }
+.model-game__head a span { margin-left: 4px; color: var(--dim); }
+.model-answer { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 16px; padding: 22px 0 24px; border-bottom: 1px solid var(--line-soft); }
+.model-answer__round { padding-top: 2px; font: 10px/1.5 var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.model-answer__body { min-width: 0; }
+.model-answer__prompt { max-width: 72ch; font-size: 13px; line-height: 1.55; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+.model-answer__text { margin-top: 9px; max-width: 64ch; font-size: 19px; line-height: 1.55; font-weight: 400; letter-spacing: -0.015em; white-space: pre-line; overflow-wrap: anywhere; }
+.model-answer__text[data-empty="true"] { color: var(--dim); }
+.model-answer__fallback { display: block; margin-top: 10px; color: var(--dim); font-size: 11px; }
+.model-page__pagination { display: flex; justify-content: space-between; gap: 16px; padding-top: 28px; margin-top: 12px; }
+.model-page__pagination button { padding: 6px 0; color: var(--muted); font-size: 12px; }
+.model-page__pagination button:hover:enabled { color: var(--ink); }
+.model-page__pagination button:disabled { color: var(--dim); opacity: 0.5; }
+@media (max-width: 600px) {
+  .model-page__head { padding-bottom: 28px; }
+  .model-answer { grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 18px 0 20px; }
+  .model-answer__text { font-size: 17px; }
+  .model-game__head { font-size: 10px; }
+}
