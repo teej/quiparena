@@ -192,7 +192,8 @@
       "lab": "MiniMax",
       "released": "2026-05-31",
       "reasoning": {
-        "maxTokens": 256
+        "maxTokens": 256,
+        "voteMaxTokens": 512
       },
       "temperature": 0.9,
       "enabled": true,
