@@ -1,5 +1,44 @@
 # QuipArena agent handoff — September 4, 2026
 
+## Current runtime — September 6, 09:14 UTC
+
+This section supersedes older stop/restart instructions below. The user has
+requested continuous games. Read ignored `.data/current-supervision.json` for
+current tool sessions, room, and screen-feed ownership. The Computer Use feed
+requires an actively awaited tool call; renew its four-minute window while
+supervising. Do not claim it continues after the assistant turn ends.
+
+62 fresh-season games have completed; every game's replay matches all official
+scores. Game 63 (THOS) is running. Grok 4.3 is enabled with reasoning disabled;
+Grok 4.5/4.6 remain disabled after deadline failures. The pool has 26 enabled
+models. Meta Muse Spark requires the user's OpenRouter age confirmation and is
+not enabled. Keep random draws; no fixed seats or retained winners.
+
+Primary model names link to model history pages, including frontier, games-list
+winner, answer authors, standings, and TV. Vote narration stays plain. Removed
+obsolete “keeps the seat” UI. Both changes are pushed.
+
+Game YFFW-1788683330395-12 received one prompt twice with different author pairs.
+The aggregator now distinguishes presented pairs and repeated occurrences;
+regressions cover repeated answers, safety quips, and skipped voting. Its archive
+was repaired to 16 normal matchups and all eight official scores.
+
+A database restart exposed an invalid PGlite checkpoint. Recovery on a separate
+copy retained all 90 archived games and rebuilt public indexes. One raw audience
+update (events ID 26987, EXZX game 25) could not be recovered. All 62 fresh games
+still replay exactly to official scores. Games 61 and 62 matched pre-restart
+snapshots, including every input event, before applying the score correction.
+Preserved original: `packages/arena/.data/quiparena-before-recovery-20260906`.
+Full recovered logical backup: `.data/backups/recovered-20260906-all-tables.json`.
+Recovery details/scripts and further copies remain under ignored `.data/`.
+
+The web service now handles SIGINT/SIGTERM by closing HTTP and the database,
+and issues a PGlite CHECKPOINT every five minutes. A clean SIGINT exit followed
+by restart was verified; 62-game replay audit passed again afterward. Always
+use graceful shutdown and wait for exit before opening this database elsewhere.
+Do not run two PGlite owners on the same directory.
+
+
 ## Fresh season and context update — September 5, 16:38 UTC
 
 User authorized game context without riffing instructions, masked voting,
