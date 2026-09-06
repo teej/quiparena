@@ -42,6 +42,13 @@ interface NormalAccumulator {
   requests: Map<string, VoteRequest>;
   votes: Map<string, VoteObservation>;
   emitted: boolean;
+  pool: NormalAnswerPool;
+}
+
+interface NormalAnswerPool {
+  round: 1 | 2;
+  prompt: string;
+  answers: Map<string, Answer>;
 }
 
 interface ThriplashAccumulator {
@@ -65,6 +72,8 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
   readonly #players = new Map<string, PlayerRef>();
   readonly #playerOrder: string[] = [];
   readonly #normal = new Map<string, NormalAccumulator>();
+  readonly #answerPools = new Map<string, NormalAnswerPool>();
+  readonly #normalRequests = new Map<string, NormalAccumulator>();
   readonly #nextMatchupIndex: Record<1 | 2, number> = { 1: 0, 2: 0 };
   #thriplash?: ThriplashAccumulator;
   #created = false;
@@ -118,8 +127,8 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
             prompt: canonicalPrompt(event.prompt),
           });
         } else if ((event.round === 1 || event.round === 2) && typeof event.answer === "string") {
-          const accumulator = this.#normalFor(event.round, event.prompt);
-          accumulator.answers.set(event.playerId, {
+          const pool = this.#answerPoolFor(event.round, event.prompt);
+          pool.answers.set(event.playerId, {
             playerId: event.playerId,
             text: event.answer,
             blank: event.blank,
@@ -134,10 +143,10 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
             request,
           );
         } else {
-          const accumulator = this.#findNormal(event.round, event.prompt, event.options)
-            ?? this.#normalFor(event.round, event.prompt);
+          const accumulator = this.#normalForVote(event.round, event.prompt, event.options);
           this.#ensureMatchupIndex(accumulator);
           accumulator.requests.set(event.playerId, request);
+          this.#normalRequests.set(`${event.round}\u0000${event.playerId}`, accumulator);
         }
         break;
       }
@@ -155,14 +164,8 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
           if (!observation.answerText) observation.answerText = selectedAnswer(request, event.choice, event.choiceKey);
           accumulator.votes.set(key, observation);
         } else {
-          const requestOptions = this.#normal.get(normalKey(event.round, event.prompt))
-            ?.requests.get(event.playerId)?.options ?? [];
-          const accumulator = this.#findNormal(
-            event.round,
-            event.prompt,
-            event.answer ? [event.answer] : requestOptions,
-          )
-            ?? this.#normalFor(event.round, event.prompt);
+          const accumulator = this.#normalRequests.get(`${event.round}\u0000${event.playerId}`)
+            ?? this.#normalForVote(event.round, event.prompt, event.answer ? [event.answer] : []);
           this.#ensureMatchupIndex(accumulator);
           const request = accumulator.requests.get(event.playerId);
           if (!observation.answerText) observation.answerText = selectedAnswer(request, event.choice, event.choiceKey);
@@ -190,33 +193,38 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
     return this.ingest(event);
   }
 
-  #normalFor(round: 1 | 2, prompt: string): NormalAccumulator {
+  #answerPoolFor(round: 1 | 2, prompt: string): NormalAnswerPool {
     const key = normalKey(round, prompt);
+    let pool = this.#answerPools.get(key);
+    if (!pool) {
+      pool = { round, prompt: canonicalPrompt(prompt), answers: new Map() };
+      this.#answerPools.set(key, pool);
+    }
+    return pool;
+  }
+
+  #normalForVote(round: 1 | 2, prompt: string, options: readonly string[]): NormalAccumulator {
+    let pool = this.#answerPools.get(normalKey(round, prompt));
+    if (!pool && options.length) {
+      const candidates = [...this.#answerPools.values()].filter(candidate => candidate.round === round
+        && options.some(option => [...candidate.answers.values()].some(answer => normalized(answer.text) === normalized(option))));
+      if (candidates.length === 1) pool = candidates[0];
+    }
+    pool ??= this.#answerPoolFor(round, prompt);
+    // A prompt can occur twice in a round. The presented answer pair identifies
+    // the matchup; the prompt alone only identifies its pool of submissions.
+    const baseKey = JSON.stringify([normalKey(round, pool.prompt), options.map(normalized).sort()]);
+    let key = baseKey;
     let accumulator = this.#normal.get(key);
+    for (let occurrence = 1; accumulator?.emitted && options.length === 2; occurrence += 1) {
+      key = `${baseKey}\u0000${occurrence}`;
+      accumulator = this.#normal.get(key);
+    }
     if (!accumulator) {
-      accumulator = {
-        round,
-        prompt: canonicalPrompt(prompt),
-        answers: new Map(),
-        requests: new Map(),
-        votes: new Map(),
-        emitted: false,
-      };
+      accumulator = { round, prompt: pool.prompt, pool, answers: new Map(), requests: new Map(), votes: new Map(), emitted: false };
       this.#normal.set(key, accumulator);
     }
     return accumulator;
-  }
-
-  #findNormal(round: 1 | 2, prompt: string, options: readonly string[]): NormalAccumulator | undefined {
-    const exact = this.#normal.get(normalKey(round, prompt));
-    if (exact) return exact;
-    if (options.length === 0) return undefined;
-    const candidates = [...this.#normal.values()].filter((candidate) => {
-      if (candidate.round !== round || candidate.emitted) return false;
-      const answerTexts = [...candidate.answers.values()].map((answer) => normalized(answer.text));
-      return options.some((option) => answerTexts.includes(normalized(option)));
-    });
-    return candidates.length === 1 ? candidates[0] : undefined;
   }
 
   #thriplashFor(prompt: string): ThriplashAccumulator {
@@ -234,6 +242,27 @@ export class GameAggregator extends EventEmitter<GameAggregatorEventMap> {
 
   #flushResolved(at: string, emitted: GameEvent[], force: boolean, normalOnly = false): void {
     const playerCount = this.#options.expectedPlayerCount ?? this.#players.size;
+    for (const accumulator of this.#normal.values()) {
+      if (accumulator.emitted) continue;
+      const submitted = [...accumulator.pool.answers.values()];
+      const eligible = submitted.filter(answer => !accumulator.requests.has(answer.playerId));
+      const options = accumulator.requests.values().next().value?.options ?? [];
+      const matching = submitted.filter(answer => options.some((option: string) => normalized(option) === normalized(answer.text)));
+      const owners = eligible.length === 2 ? eligible : matching.length === 2 ? matching : submitted.length === 2 ? submitted : [];
+      accumulator.answers = new Map(owners.map(answer => [answer.playerId, answer]));
+    }
+    if (force) {
+      // Empty answers can skip voting entirely. Resolve an unambiguous leftover
+      // pair after the round, while preserving separate repeated-prompt matches.
+      for (const pool of this.#answerPools.values()) {
+        const assigned = new Set([...this.#normal.values()].filter(group => group.pool === pool)
+          .flatMap(group => [...group.answers.keys()]));
+        const remaining = [...pool.answers.values()].filter(answer => !assigned.has(answer.playerId));
+        if (remaining.length !== 2) continue;
+        const accumulator = this.#normalForVote(pool.round, pool.prompt, []);
+        accumulator.answers = new Map(remaining.map(answer => [answer.playerId, answer]));
+      }
+    }
     for (const accumulator of this.#normal.values()) {
       if (accumulator.emitted || accumulator.answers.size !== 2) continue;
       const expectedVotes = Math.max(0, playerCount - 2);

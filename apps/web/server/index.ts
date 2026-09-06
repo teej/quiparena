@@ -20,8 +20,11 @@ export async function main(): Promise<void> {
   const databaseRequested = requestedStore === "db"
     || (requestedStore === undefined && databaseUrlSet);
   let store: Store;
+  let closeDatabase: (() => Promise<void>) | undefined;
+  let housekeeping: ReturnType<typeof setInterval> | undefined;
   if (databaseRequested) {
     const db = await openDb();
+    closeDatabase = () => db.close();
     const dbStore = new DbStore(db);
     store = dbStore;
     // Housekeeping runs before live-state hydration so a stale game is never
@@ -29,10 +32,15 @@ export async function main(): Promise<void> {
     await dbStore.recomputeRatings().catch((error: unknown) => {
       console.error("QuipArena startup housekeeping failed", error);
     });
-    const sweep = () => void dbStore.recomputeRatings().catch((error: unknown) => {
+    const sweep = () => void dbStore.recomputeRatings().then(async () => {
+      // PGlite has no background checkpointer. Persist a recovery point while
+      // the long-running game loop is active, as well as on clean shutdown.
+      if (db.$driver === "pglite" && "exec" in db.$client) await db.$client.exec("CHECKPOINT");
+    }).catch((error: unknown) => {
       console.error("QuipArena housekeeping failed", error);
     });
-    setInterval(sweep, 5 * 60_000).unref();
+    housekeeping = setInterval(sweep, 5 * 60_000);
+    housekeeping.unref();
     console.log(`QuipArena store: database (${db.$driver})`);
   } else {
     store = new InMemoryStore(true);
@@ -41,6 +49,21 @@ export async function main(): Promise<void> {
   const service = createQuipArenaServer({ ingestToken, store });
   const address = await service.start(port, process.env["HOST"] ?? "127.0.0.1");
   console.log(`QuipArena web service listening on http://${address.address}:${address.port}`);
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    clearInterval(housekeeping);
+    try {
+      await service.close();
+      await closeDatabase?.();
+    } catch (error) {
+      console.error("QuipArena shutdown failed", error);
+      process.exitCode = 1;
+    }
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }
 
 const invokedPath = process.argv[1];

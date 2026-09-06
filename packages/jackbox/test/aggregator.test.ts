@@ -343,3 +343,64 @@ it.each([false, true])("preserves answer ownership when a safety quip is present
   expect(resolved.matchup.answers.find(answer => answer.playerId === "p2")).toMatchObject({ text: "I DON'T WANT TO GO", blank: true });
   expect(resolved.matchup.answers[resolved.matchup.votes[0]!.choice]!.playerId).toBe("p1");
 });
+
+it.each([false, true])("keeps repeated prompts separate even when answer pairs are identical=%s", (identical) => {
+  const emitted: GameEvent[] = [];
+  const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 8, onEvent: event => emitted.push(event) });
+  const players = Array.from({ length: 8 }, (_, index) => `p${index + 1}`);
+  const prompt = "A surprising thing that DOES impress Shania Twain much";
+  const texts = ["A fitted sheet", "A returned shopping cart", identical ? "A fitted sheet" : "A grocery list", identical ? "A returned shopping cart" : "A cassette tape"];
+  texts.forEach((text, index) => add(aggregator, answer(players[index]!, 2, prompt, text)));
+  for (const pair of [0, 1]) {
+    const options = texts.slice(pair * 2, pair * 2 + 2).map(text => text.toUpperCase());
+    const voters = players.filter((_, index) => index < pair * 2 || index >= pair * 2 + 2);
+    for (const voter of voters) {
+      add(aggregator, voteRequest(voter, 2, `${prompt}\nVote for your favorite`, options));
+      add(aggregator, voteCast(voter, 2, prompt, 1, "1", options[1]));
+    }
+  }
+  const results = emitted.filter(event => event.type === "matchup.resolved");
+  expect(results).toHaveLength(2);
+  expect(results.map(event => event.matchup.id)).toEqual(["game-4:r2:m0", "game-4:r2:m1"]);
+  expect(results.map(event => event.matchup.answers.map(answer => answer.playerId))).toEqual([["p1", "p2"], ["p3", "p4"]]);
+  expect(results.map(event => event.matchup.votes.length)).toEqual([6, 6]);
+  expect(results.flatMap(event => event.matchup.votes).every(vote => vote.choice === 1)).toBe(true);
+});
+
+it("uses voting eligibility to identify a safety quip's owner among repeated-prompt answers", () => {
+  const emitted: GameEvent[] = [];
+  const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 4, onEvent: event => emitted.push(event) });
+  const prompt = "Same prompt";
+  const submission = answer("p1", 1, prompt, "⁇");
+  if (submission.type !== "answer.submitted") throw new Error("Expected answer");
+  add(aggregator, { ...submission, blank: true });
+  add(aggregator, answer("p2", 1, prompt, "Real answer"));
+  add(aggregator, answer("p3", 1, prompt, "Other answer"));
+  add(aggregator, answer("p4", 1, prompt, "Fourth answer"));
+  for (const voter of ["p3", "p4"]) {
+    add(aggregator, voteRequest(voter, 1, prompt, ["GAME SAFETY QUIP", "REAL ANSWER"]));
+    add(aggregator, voteCast(voter, 1, prompt, 0, "0", "GAME SAFETY QUIP"));
+  }
+  expect(emitted.filter(event => event.type === "matchup.resolved")).toMatchObject([{
+    matchup: { answers: [{ playerId: "p1", text: "GAME SAFETY QUIP", blank: true }, { playerId: "p2", text: "Real answer" }] },
+  }]);
+});
+
+it("resolves a skipped pair sharing a prompt with a voted pair at the round boundary", () => {
+  const emitted: GameEvent[] = [];
+  const aggregator = new GameAggregator({ gameId: "game-4", expectedPlayerCount: 4, onEvent: event => emitted.push(event) });
+  for (const [player, text] of [["p1", "First"], ["p2", "Second"], ["p3", "Third"], ["p4", ""]]) {
+    const submission = answer(player!, 1, "Same prompt", text!);
+    if (submission.type !== "answer.submitted") throw new Error("Expected answer");
+    add(aggregator, { ...submission, blank: !text });
+  }
+  for (const voter of ["p3", "p4"]) {
+    add(aggregator, voteRequest(voter, 1, "Same prompt", ["FIRST", "SECOND"]));
+    add(aggregator, voteCast(voter, 1, "Same prompt", 0, "0", "FIRST"));
+  }
+  expect(emitted.filter(event => event.type === "matchup.resolved")).toHaveLength(1);
+  add(aggregator, { type: "round.started", gameId: "game-4", round: 2, at });
+  const results = emitted.filter(event => event.type === "matchup.resolved");
+  expect(results).toHaveLength(2);
+  expect(results[1]!.matchup).toMatchObject({ index: 1, answers: [{ playerId: "p3" }, { playerId: "p4", blank: true }], votes: [] });
+});
