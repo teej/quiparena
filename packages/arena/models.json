@@ -275,7 +275,8 @@
       "lab": "Meta",
       "released": "2026-08-09",
       "reasoning": {
-        "maxTokens": 400
+        "maxTokens": 400,
+        "voteMaxTokens": 512
       },
       "temperature": 0.9,
       "enabled": true,
