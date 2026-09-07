@@ -162,6 +162,36 @@ describe("Recorder", () => {
     }
   });
 
+  it("retains audience votes across separate Thriplash pairs", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    const recorder = new Recorder(db);
+    const gameId = "audience-pairs";
+    const at = "2026-09-07T22:00:00Z";
+    try {
+      await recorder.record({ type: "game.created", gameId, roomCode: "PAIR", at });
+      for (const id of ["a", "b", "c", "d"]) {
+        await recorder.record({ type: "player.joined", gameId, player: { id, name: id, modelId: `lab/${id}` }, at });
+      }
+      const entries = ["a", "b", "c", "d"].map((id, index) => ({
+        playerId: id, prompt: index < 2 ? "First pair" : "Second pair",
+        lines: [id, id, id] as [string, string, string],
+      }));
+      await recorder.record({ type: "thriplash.resolved", gameId,
+        thriplash: { gameId, prompt: "First pair", entries, votes: [] }, at });
+      for (const offset of [0, 2]) {
+        const prompt = entries[offset]!.prompt;
+        await recorder.record({ type: "audience.votes", gameId, prompt, counts: [1, 0], raw: {}, at });
+        await recorder.record({ type: "matchup.observed", gameId, prompt,
+          answers: [entries[offset]!.lines.join("\n"), entries[offset + 1]!.lines.join("\n")],
+          winner: 0, percentages: [100, 0], raw: {}, at });
+      }
+      const audience = (await db.select().from(votes)).filter(v => v.population === "audience");
+      expect(audience.map(v => v.choice).sort()).toEqual([0, 2]);
+      await backfillAudienceVotes(db);
+      expect((await db.select().from(votes)).filter(v => v.population === "audience").map(v => v.choice).sort()).toEqual([0, 2]);
+    } finally { await db.close(); }
+  });
+
   it("round-trips observed standings and reconciles aggregate audience votes by prompt and answers", async () => {
     const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
     const warnings: string[] = [];

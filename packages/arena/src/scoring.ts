@@ -76,8 +76,12 @@ function addWinnerBonus(
   const winnerPosition = winners[0]!;
   const winner = choices[winnerPosition]!;
   const total = weights.reduce((sum, weight) => sum + weight, 0);
+  // ZGHZ R2: a unanimous player + audience result earned a 1,000-point
+  // Super Quiplash bonus, versus 500 without an audience vote.
+  const superQuiplash = round !== 3 && validVotes.some(vote => vote.population === "audience")
+    && validVotes.some(vote => vote.population === "player");
   const bonus = weights[winnerPosition] === total
-    ? QUIPLASH_BONUSES[round]
+    ? QUIPLASH_BONUSES[round] * (superQuiplash ? 2 : 1)
     : WIN_BONUSES[round];
   return { ...scores, [winner.ownerId]: (scores[winner.ownerId] ?? 0) + bonus };
 }

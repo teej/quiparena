@@ -9,7 +9,7 @@ import type {
   Thriplash,
   Vote,
 } from "@quiparena/core";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import type { ArenaDatabaseClient } from "./db/client.js";
 import {
@@ -260,7 +260,10 @@ async function resolveObservedTarget(
 
 function targetCondition(target: ObservedTarget) {
   if (target.matchupId !== null) return eq(votes.matchupId, target.matchupId);
-  if (target.thriplashId !== null) return eq(votes.thriplashId, target.thriplashId);
+  if (target.thriplashId !== null) return and(
+    eq(votes.thriplashId, target.thriplashId),
+    inArray(votes.choice, target.choices),
+  );
   throw new Error("An observed audience vote target must identify a matchup or Thriplash");
 }
 
@@ -870,8 +873,10 @@ export class Recorder {
 /** Re-run audience result reconciliation from the immutable stored event stream. */
 export async function backfillAudienceVotes(
   db: ArenaDatabaseClient,
+  gameId?: string,
 ): Promise<AudienceBackfillResult> {
-  const eventRows = await db.select({ payload: events.payload }).from(events).orderBy(asc(events.id));
+  const eventRows = await db.select({ payload: events.payload }).from(events)
+    .where(gameId === undefined ? undefined : eq(events.gameId, gameId)).orderBy(asc(events.id));
   const latestCounts = new Map<string, AudienceVotesEvent>();
   const affectedGames = new Set<string>();
   const result: AudienceBackfillResult = {

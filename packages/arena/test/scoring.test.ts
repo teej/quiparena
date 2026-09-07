@@ -32,6 +32,13 @@ function matchup(round: 1 | 2, gameVotes: Vote[]): Matchup {
 }
 
 describe("Quiplash 3 scoring", () => {
+  it("awards the observed Super Quiplash bonus when players and audience are unanimous", () => {
+    const unanimous = [...votes(0, 0, 0, 0, 0, 0), { population: "audience" as const, choice: 0, weight: 1 }];
+    expect(scoreMatchup(matchup(2, unanimous)).scores).toEqual({ a: 3000, b: 0 });
+    expect(scoreMatchup(matchup(1, unanimous)).scores).toEqual({ a: 1500, b: 0 });
+    expect(scoreMatchup(matchup(2, [...votes(0, 0, 0, 0, 0, 0), { population: "audience", choice: 1 }])).scores)
+      .toEqual({ a: 1920, b: 280 });
+  });
   it("awards the round pool for an automatic win against a truly empty answer", () => {
     for (const round of [1, 2] as const) {
       const game = matchup(round, []);
