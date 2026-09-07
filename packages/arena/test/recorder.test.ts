@@ -162,6 +162,42 @@ describe("Recorder", () => {
     }
   });
 
+  it("rejects late audience counts that disagree with the displayed result", async () => {
+    const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
+    const recorder = new Recorder(db);
+    const gameId = "late-audience";
+    const at = "2026-09-07T22:00:00Z";
+    try {
+      await recorder.record({ type: "game.created", gameId, roomCode: "LATE", at });
+      for (let i = 0; i < 8; i++) await recorder.record({ type: "player.joined", gameId,
+        player: { id: `p${i}`, name: `P${i}`, modelId: `lab/p${i}` }, at });
+      for (const [index, unanimous] of [false, true].entries()) {
+        const prompt = `Prompt ${index}`;
+        await recorder.record({ type: "matchup.resolved", gameId, at, matchup: {
+          id: `late-${index}`, gameId, round: 1, index, prompt,
+          answers: [{ playerId: "p0", text: "Alpha", blank: false }, { playerId: "p1", text: "Beta", blank: false }],
+          votes: Array.from({ length: 6 }, (_, i) => ({ voterId: `p${i + 2}`, population: "player" as const, choice: unanimous || i < 3 ? 0 : 1 })),
+        } });
+        await recorder.record({ type: "audience.votes", gameId, prompt, counts: [1, 0], raw: {}, at });
+        await recorder.record({ type: "matchup.observed", gameId, prompt, answers: ["Alpha", "Beta"],
+          winner: unanimous ? 0 : "tie", percentages: unanimous ? [100, 0] : [50, 50],
+          raw: unanimous ? { text: '"Alpha" by P0 got a quiplash with 100 percent of the vote.' } : {}, at });
+      }
+      expect((await db.select().from(votes)).filter(v => v.population === "audience")).toEqual([]);
+      await recorder.record({ type: "thriplash.resolved", gameId, at, thriplash: {
+        gameId, prompt: "Final pair", entries: [
+          { playerId: "p0", lines: ["A", "A", "A"] }, { playerId: "p1", lines: ["B", "B", "B"] },
+        ], votes: Array.from({ length: 6 }, (_, i) => ({ voterId: `p${i + 2}`, population: "player" as const, choice: i < 4 ? 0 : 1 })),
+      } });
+      await recorder.record({ type: "audience.votes", gameId, prompt: "Final pair", counts: [1, 0], raw: {}, at });
+      await recorder.record({ type: "matchup.observed", gameId, prompt: "Final pair", answers: ["A\nA\nA", "B\nB\nB"],
+        winner: 0, percentages: [57, 43], raw: {}, at });
+      await backfillAudienceVotes(db, gameId);
+      expect((await db.select().from(votes)).filter(v => v.population === "audience"))
+        .toEqual([expect.objectContaining({ choice: 1, weight: 1, inferred: true, thriplashId: `${gameId}:thriplash` })]);
+    } finally { await db.close(); }
+  });
+
   it("retains audience votes across separate Thriplash pairs", async () => {
     const db = await openDb({ databaseUrl: null, dataDir: "memory://" });
     const recorder = new Recorder(db);

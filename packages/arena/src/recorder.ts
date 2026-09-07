@@ -282,10 +282,31 @@ async function reconcileObservedAudienceVote(
   audienceVotes: AudienceVotesEvent | undefined,
   target: ObservedTarget,
 ): Promise<"counted" | "inferred" | "none"> {
-  const directCounts = audienceVotes?.counts.slice(0, 2);
+  let directCounts = audienceVotes?.counts.slice(0, 2);
+  // Count-group polling can include votes received after the game's cutoff.
+  // When every player vote is known, the displayed result is the cross-check.
+  const [auditPlayers, auditVotes] = await Promise.all([
+    db.select({ id: gamePlayers.playerId }).from(gamePlayers).where(eq(gamePlayers.gameId, observed.gameId)),
+    db.select({ choice: votes.choice, weight: votes.weight, voterId: votes.voterId }).from(votes)
+      .where(and(targetCondition(target), eq(votes.population, "player"))),
+  ]);
+  const complete = auditPlayers.length > 2 && auditVotes.length === auditPlayers.length - 2
+    && auditVotes.every(vote => vote.voterId !== null && vote.weight === 1);
+  if (complete && observed.percentages && directCounts?.length === 2) {
+    const playerCounts = target.choices.map(choice => auditVotes.filter(vote => vote.choice === choice).length);
+    const total = playerCounts.reduce((sum, count) => sum + count, 0) + directCounts.reduce((sum, count) => sum + count, 0);
+    const agrees = playerCounts.every((count, index) => Math.round(100 * (count + directCounts![index]!) / total) === observed.percentages![index]);
+    // An explicitly ordinary Quiplash also rules out a late unanimous audience
+    // vote, even though its addition would leave the percentage at 100.
+    const ordinaryQuiplash = /got a quiplash with 100 percent of the vote/i.test(JSON.stringify(observed.raw));
+    if (!agrees || ordinaryQuiplash) {
+      directCounts = undefined;
+      await db.delete(votes).where(and(targetCondition(target), eq(votes.population, "audience"), eq(votes.source, "game")));
+    }
+  }
   const hasValidDirectCounts = directCounts?.length === 2
     && directCounts.every((count) => Number.isFinite(count) && count >= 0);
-  if (audienceVotes && hasValidDirectCounts && directCounts.some((count) => count > 0)) {
+  if (audienceVotes && directCounts && hasValidDirectCounts && directCounts.some((count) => count > 0)) {
     await db.delete(votes).where(and(
       targetCondition(target),
       eq(votes.population, "audience"),
@@ -312,7 +333,7 @@ async function reconcileObservedAudienceVote(
     return "counted";
   }
 
-  // A nonzero fetched/count-group row is authoritative for this target.
+  // A validated fetched/count-group row is authoritative for this pair.
   const countedRows = await db.select({ id: votes.id }).from(votes).where(and(
     targetCondition(target),
     eq(votes.population, "audience"),
@@ -321,14 +342,13 @@ async function reconcileObservedAudienceVote(
   )).limit(1);
   if (countedRows.length > 0) return "counted";
 
-  // The current inference contract is only valid for normal two-author
-  // matchups, where all other occupied seats vote.
-  if (target.matchupId === null || !observed.percentages) return "none";
+  // Infer only for a two-author pair with every other occupied seat voting.
+  if (!observed.percentages) return "none";
   const [players, playerVoteRows] = await Promise.all([
     db.select({ playerId: gamePlayers.playerId }).from(gamePlayers)
       .where(eq(gamePlayers.gameId, observed.gameId)),
     db.select({ choice: votes.choice, weight: votes.weight, voterId: votes.voterId }).from(votes)
-      .where(and(eq(votes.matchupId, target.matchupId), eq(votes.population, "player"))),
+      .where(and(targetCondition(target), eq(votes.population, "player"))),
   ]);
   const expectedPlayerVotes = Math.max(0, players.length - 2);
   const completePlayerVotes = expectedPlayerVotes > 0
@@ -355,7 +375,7 @@ async function reconcileObservedAudienceVote(
     id: audienceVoteId(observed.gameId, target, choice),
     gameId: observed.gameId,
     matchupId: target.matchupId,
-    thriplashId: null,
+    thriplashId: target.thriplashId,
     voterId: null,
     population: "audience",
     source: "game",
