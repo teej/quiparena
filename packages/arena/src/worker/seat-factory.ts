@@ -179,6 +179,7 @@ export function buildHarnessSeat(options: CreateSeatOptions, bus: EventPublisher
   const connection = new EcastConnection({
     room: options.room as unknown as RoomInfo,
     name: options.player.name,
+    ...(process.env["JACKBOX_PASSWORD"] ? { password: process.env["JACKBOX_PASSWORD"] } : {}),
     ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
     ...(options.recordFile === undefined ? {} : { recordFile: options.recordFile }),
   });

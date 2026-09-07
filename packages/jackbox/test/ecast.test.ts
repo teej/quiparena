@@ -19,6 +19,20 @@ afterEach(async () => {
 });
 
 describe("EcastConnection", () => {
+  it("sends a lobby password without dropping leading zeroes", async () => {
+    const frames = await lobbyFrames();
+    let requestUrl = "";
+    const { server, baseUrl } = await mockServer((socket, request) => {
+      requestUrl = request.url ?? "";
+      socket.send(JSON.stringify(frames[0]));
+    });
+    servers.push(server);
+    const connection = makeConnection(baseUrl, { password: "00123" });
+    connections.push(connection);
+    await connection.connect();
+    expect(new URL(requestUrl, baseUrl).searchParams.get("password")).toBe("00123");
+  });
+
   it("connects with ecast-v0, applies the real REC1 welcome, and advances entity versions", async () => {
     const frames = await lobbyFrames();
     let requestUrl = "";

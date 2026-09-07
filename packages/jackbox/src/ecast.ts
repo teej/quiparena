@@ -49,6 +49,8 @@ export interface EcastConnectionOptions {
   room: Pick<RoomInfo, "code" | "host" | "keepalive" | "controllerBranch" | "audienceEnabled">;
   name: string;
   userId?: string;
+  /** Lobby password. Keep as text to preserve leading zeroes. */
+  password?: string;
   credentials?: SeatCredentials;
   origin?: string;
   referer?: string;
@@ -318,6 +320,7 @@ export class EcastConnection extends EventEmitter<EcastEventMap> {
     url.searchParams.set("name", this.name);
     url.searchParams.set("format", "json");
     url.searchParams.set("user-id", this.userId);
+    if (this.#options.password) url.searchParams.set("password", this.#options.password);
 
     // UNVERIFIED: the recordings contain reconnect URLs, not a fresh-player URL;
     // the credentials-free form follows docs/ecast-protocol.md §2.
