@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import type { LivePlayerState } from "../../../shared/types.js";
 import { MatchupPanel } from "../components/MatchupPanel.js";
 import { STATUS, answerText } from "../components/Pane.js";
+import { useTerminalText } from "../hooks/useTerminalText.js";
 import { useLiveEvents } from "../hooks/useLiveEvents.js";
 
 const TV_WIDTH = 1920;
@@ -29,16 +30,16 @@ function TvPlayer({ player }: { player: LivePlayerState }) {
   const showAnswer = Boolean(answer && !player.vote);
   const reasoning = player.reasoning.trimEnd();
   const text = showAnswer ? answer! : reasoning || (player.vote && answer ? `Voted for: ${answer}` : player.prompt) || " ";
-  const streaming = player.activity === "thinking" || player.activity === "voting";
+  const displayed = useTerminalText(text, `${player.prompt ?? ""}:${showAnswer ? "answer" : player.vote ? "vote" : "thinking"}`);
   useLayoutEffect(() => {
     if (viewport.current) viewport.current.scrollTop = showAnswer ? 0 : viewport.current.scrollHeight;
-  }, [text, showAnswer]);
+  }, [displayed, showAnswer]);
   return <li className="tv__player" data-activity={player.activity}
     >
     <span className="tv__name">{player.player.name}</span>
     <span className="tv__status">{player.activity === "waiting" ? "" : STATUS[player.activity]}</span>
     <p className="tv__line" ref={viewport} data-kind={showAnswer ? "answer" : "reasoning"}>
-      {text}{streaming && !showAnswer && <span className="caret" aria-hidden="true" />}
+      {displayed}
     </p>
 
   </li>;

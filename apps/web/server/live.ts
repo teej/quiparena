@@ -43,7 +43,7 @@ export class LiveCoordinator {
   private readonly subscribers = new Set<Subscriber>();
   private readonly coalescer: ThinkingCoalescer;
 
-  constructor(private readonly store: Store, coalesceMs = 100) {
+  constructor(private readonly store: Store, coalesceMs = 40) {
     this.coalescer = new ThinkingCoalescer((event) => this.applyAndBroadcast(event), coalesceMs);
   }
 

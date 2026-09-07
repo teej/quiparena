@@ -26,7 +26,7 @@ function mockModel(text: string, reasoning = ""): MockLanguageModelV4 {
 }
 
 function mockModelSequence(
-  responses: Array<{ text: string; reasoning?: string }>,
+  responses: Array<{ text: string; reasoning?: string; textChunks?: string[] }>,
 ): MockLanguageModelV4 {
   let index = 0;
   return new MockLanguageModelV4({
@@ -42,7 +42,7 @@ function mockModelSequence(
             ]
           : []),
         { type: "text-start", id: "text-1" },
-        { type: "text-delta", id: "text-1", delta: response.text },
+        ...(response.textChunks ?? [response.text]).map(delta => ({ type: "text-delta" as const, id: "text-1", delta })),
         { type: "text-end", id: "text-1" },
         {
           type: "finish",
@@ -465,7 +465,7 @@ describe("ModelPlayer streaming", () => {
     await expect(player.answer("Anything", context())).resolves.toBe("no comment");
   });
 
-  it("streams reasoning and draft deltas and emits usage plus OpenRouter cost", async () => {
+  it("streams reasoning and cumulative drafts and emits usage plus OpenRouter cost", async () => {
     const events: StreamEvent[] = [];
     const thinking: string[] = [];
     const drafts: string[] = [];
@@ -473,7 +473,7 @@ describe("ModelPlayer streaming", () => {
       model: "test/trace",
       displayName: "Trace",
       playerId: "seat-2",
-      languageModel: mockModel("A punchline.", "Tiny thought"),
+      languageModel: mockModelSequence([{ text: "A punchline.", reasoning: "Tiny thought", textChunks: ["A ", "punchline."] }]),
       safetyMarginMs: 0,
       sink: (event) => events.push(event),
       logger: quietLogger(),
@@ -486,7 +486,7 @@ describe("ModelPlayer streaming", () => {
     })).resolves.toBe("A punchline");
 
     expect(thinking).toEqual(["Tiny thought"]);
-    expect(drafts).toEqual(["A punchline."]);
+    expect(drafts).toEqual(["A ", "A punchline."]);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: "trace.completed",

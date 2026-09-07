@@ -258,8 +258,8 @@ section.option--replay { padding: 10px 12px; }
 .tv__status { font-family: var(--mono); font-size: 10px; align-self: center; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .tv__player[data-activity="thinking"] .tv__status, .tv__player[data-activity="voting"] .tv__status { color: var(--accent); }
 .tv__player[data-activity="submitted"] .tv__status, .tv__player[data-activity="voted"] .tv__status { color: var(--ok); }
-.tv__line { grid-column: 1 / -1; min-width: 0; height: 66px; overflow: hidden; font-family: var(--sans); font-size: 16px; line-height: 22px; color: #aeb0b5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tv__line[data-kind="answer"] { color: var(--ink); font-size: 18px; font-weight: 500; }
+.tv__line { grid-column: 1 / -1; min-width: 0; height: 66px; overflow: hidden; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 15px; line-height: 22px; color: #aeb0b5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tv__line[data-kind="answer"] { color: var(--ink); }
 .tv .matchup--compact { position: absolute; left: 32px; bottom: 32px; width: 1376px; max-height: 350px; overflow: hidden; padding: 22px 26px 24px; background: var(--tv-panel); border: 1px solid var(--tv-rule); }
 .tv .matchup--compact .matchup__kicker { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
 .tv .matchup--compact .matchup__prompt { font-family: var(--sans); font-size: 28px; font-weight: 500; line-height: 1.2; letter-spacing: -.02em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

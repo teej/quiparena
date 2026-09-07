@@ -635,7 +635,7 @@ export class ModelPlayer implements Player {
           case "text-delta":
             if (firstTokenMs === null && part.text) firstTokenMs = elapsedMs(startedAt);
             text += part.text;
-            this.callHook(ctx.onDraft, part.text, "draft");
+            this.callHook(ctx.onDraft, text, "draft");
             break;
           case "finish-step":
             usage = part.usage;

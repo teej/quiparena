@@ -12,7 +12,7 @@ export class ThinkingCoalescer {
 
   constructor(
     private readonly emit: (event: ThinkingEvent) => void,
-    private readonly intervalMs = 100,
+    private readonly intervalMs = 40,
   ) {}
 
   push(event: ThinkingEvent): void {
