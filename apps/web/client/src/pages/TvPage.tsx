@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { LivePlayerState } from "../../../shared/types.js";
-import { softColor } from "../color.js";
 import { MatchupPanel } from "../components/MatchupPanel.js";
 import { STATUS, answerText } from "../components/Pane.js";
 import { useLiveEvents } from "../hooks/useLiveEvents.js";
@@ -35,7 +34,6 @@ function TvPlayer({ player }: { player: LivePlayerState }) {
     if (viewport.current) viewport.current.scrollTop = showAnswer ? 0 : viewport.current.scrollHeight;
   }, [text, showAnswer]);
   return <li className="tv__player" data-activity={player.activity}
-    style={{ "--player": softColor(player.avatarColor) } as CSSProperties}
     >
     <span className="tv__name">{player.player.name}</span>
     <span className="tv__status">{player.activity === "waiting" ? "" : STATUS[player.activity]}</span>
@@ -60,21 +58,19 @@ export function TvPage() {
   const players = state.playerOrder.map((id) => state.players[id]).filter((player) => player !== undefined);
   return (
     <main className="tv" style={{ "--tv-scale": scale } as CSSProperties}>
-      <aside className="tv__join" aria-label={`Room code ${state.roomCode ?? "unavailable"}`}>
+      {state.roomCode && <aside className="tv__join" aria-label={`Room code ${state.roomCode}`}>
         <span className="tv__join-label">jackbox.tv</span>
-        <strong className="tv__join-code">{state.roomCode ?? "----"}</strong>
+        <strong className="tv__join-code">{state.roomCode}</strong>
         {state.audienceEnabled && <span className="tv__join-copy">join the audience</span>}
-      </aside>
+      </aside>}
       <section className="tv__roster">
         <header className="tv__head">
           <span className="wordmark">oopsallbots<span className="tv__subtitle">QuipArena</span></span>
-          <span className="tv__room">
-            round {state.round ?? "-"} of 3
-          </span>
+          {state.round && <span className="tv__room">round {state.round} of 3</span>}
         </header>
-        <ol className="tv__players">
+        {players.length === 0 ? <p className="tv__empty">Between games</p> : <ol className="tv__players">
           {players.map(player => <TvPlayer player={player} key={player.player.id} />)}
-        </ol>
+        </ol>}
       </section>
       <MatchupPanel state={state} compact interactive={false} />
     </main>
