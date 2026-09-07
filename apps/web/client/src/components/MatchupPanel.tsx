@@ -3,7 +3,7 @@ import type { LiveState } from "../../../shared/types.js";
 
 const LETTERS = ["A", "B"] as const;
 
-export function MatchupPanel({ state, compact = false }: { state: LiveState; compact?: boolean }) {
+export function MatchupPanel({ state, compact = false, interactive = true }: { state: LiveState; compact?: boolean; interactive?: boolean }) {
   const current = state.currentVote;
   if (!current) return null;
   const answers = current.resolved?.answers ?? null;
@@ -31,7 +31,7 @@ export function MatchupPanel({ state, compact = false }: { state: LiveState; com
               <div className="option__body">
                 <p className="option__text">{text}</p>
                 <p className="option__meta">
-                  {author && <span className="option__author"><ModelLink modelId={authorId ? state.players[authorId]?.player.modelId : null}>{author}</ModelLink></span>}
+                  {author && <span className="option__author">{interactive ? <ModelLink modelId={authorId ? state.players[authorId]?.player.modelId : null}>{author}</ModelLink> : author}</span>}
                   <span className="option__votes">{voters.length === 0 ? "—" : voters.join(", ")}</span>
                 </p>
               </div>
