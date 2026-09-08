@@ -1,7 +1,8 @@
 import type { LeaderboardPopulation } from "./types.js";
 
 /**
- * One enabled model on the cost frontier. Cost is the sum of `cost_usd` over every
+ * One enabled model on the cost frontier. Cost reverses audited Solar/Mercury
+ * promotions, otherwise using billed `cost_usd`, summed over every
  * trace the model produced (answers, finals, and votes); a "winning joke" is a
  * rounds 1-2 matchup the model won on a strict majority of the selected population's
  * weighted votes. Ties are played but not won.

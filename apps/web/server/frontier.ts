@@ -15,6 +15,7 @@ import {
 
 import type { FrontierEntry, FrontierResponse } from "../shared/frontier.js";
 import type { AnswerTrace, LeaderboardEntry, LeaderboardPopulation } from "../shared/types.js";
+import { frontierCost } from "./frontier-cost.js";
 
 /** Rating-side inputs, one per model, already scoped to the requested population. */
 export interface FrontierModelRow {
@@ -187,7 +188,7 @@ export function inMemoryFrontier(
       traceRows.push({
         modelSlug,
         kind,
-        costUsd: asNumber(trace.usage?.costUsd),
+        costUsd: frontierCost(modelSlug, asNumber(trace.usage?.costUsd), trace.at),
         totalMs: answerMs(trace.usage, trace.attempts),
         reasoningTokens: asNumber(trace.usage?.reasoningTokens),
       });
@@ -205,6 +206,7 @@ async function summarizeGame(db: ArenaDatabaseClient, gameId: string): Promise<G
       modelSlug: traces.modelSlug,
       kind: traces.kind,
       costUsd: traces.costUsd,
+      createdAt: traces.createdAt,
       usage: traces.usage,
     }).from(traces).where(eq(traces.gameId, gameId)),
     db.select({
@@ -257,7 +259,7 @@ async function summarizeGame(db: ArenaDatabaseClient, gameId: string): Promise<G
   const traceInputs = traceRows.flatMap((row): FrontierTraceRow[] => row.modelSlug && seasonGames.has(row.gameId) ? [{
     modelSlug: row.modelSlug,
     kind: row.kind,
-    costUsd: row.costUsd,
+    costUsd: frontierCost(row.modelSlug, row.costUsd, row.createdAt),
     totalMs: answerMs(row.usage),
     reasoningTokens: asNumber(row.usage?.["reasoningTokens"]),
   }] : []);
@@ -297,7 +299,7 @@ interface GameTotals {
   reasoningCount: number;
   outcomes: Record<LeaderboardPopulation, { wins: number; played: number }>;
 }
-const AGGREGATE_VERSION = 1;
+const AGGREGATE_VERSION = 2;
 
 /** Closed games are summarized once. A version bump explicitly rebuilds derived data. */
 export async function refreshGameAnalytics(db: ArenaDatabaseClient): Promise<void> {

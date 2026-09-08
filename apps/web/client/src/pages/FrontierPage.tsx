@@ -168,7 +168,7 @@ function Tooltip({ point, width }: { point: Placed; width: number }) {
     ["rating", `${entry.rating} ±${entry.plusMinus}`],
     ["$ / win", formatUsd(entry.costPerWinUsd)],
     ["$ / answer", formatUsd(entry.costPerAnswerUsd)],
-    ["spend", formatUsd(entry.totalCostUsd || null)],
+    ["comparison cost", formatUsd(entry.totalCostUsd || null)],
     ["matchups", `${entry.matchupWins}–${entry.matchupsPlayed - entry.matchupWins}`],
     ["answers", String(entry.answers)],
     ["games", String(entry.games)],
@@ -391,6 +391,7 @@ export function FrontierPage() {
         <h1>Frontier</h1>
         <p>
           Rating against cost per winning answer.
+          {" "}Solar and Mercury costs exclude their audited launch discounts; other models use billed costs.
         </p>
       </header>
       {SHOW_VOTER_CONTROLS && (
